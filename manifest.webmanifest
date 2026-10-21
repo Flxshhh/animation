@@ -1,0 +1,14 @@
+{
+  "name": "Мои слова — английский",
+  "short_name": "Слова",
+  "description": "Личный словарь английских слов с переводом, транскрипцией и тренажёром",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f5fb",
+  "theme_color": "#4f46e5",
+  "lang": "ru",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

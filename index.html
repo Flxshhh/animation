@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4f46e5">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Слова">
+  <title>Мои слова</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="title">Мои слова</h1>
+  </header>
+
+  <main>
+    <!-- ===== Вкладка «Слова» ===== -->
+    <section id="tab-words" class="tab active">
+      <form id="add-form" class="card add-form" autocomplete="off">
+        <input id="add-en" type="text" placeholder="Английское слово или фраза" autocapitalize="none" spellcheck="false" required>
+        <input id="add-ru" type="text" placeholder="Свой перевод (необязательно)">
+        <button type="submit" class="btn primary">Добавить</button>
+      </form>
+
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Поиск…">
+        <select id="filter">
+          <option value="all">Все</option>
+          <option value="learning">Учу</option>
+          <option value="learned">Выучено</option>
+        </select>
+      </div>
+
+      <div id="word-count" class="muted small"></div>
+      <ul id="word-list" class="word-list"></ul>
+    </section>
+
+    <!-- ===== Вкладка «Тренажёр» ===== -->
+    <section id="tab-train" class="tab">
+      <div id="train-root"></div>
+    </section>
+
+    <!-- ===== Вкладка «Статистика» ===== -->
+    <section id="tab-stats" class="tab">
+      <div id="stats-root"></div>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-tab="words" class="active"><span class="ico">📚</span>Слова</button>
+    <button data-tab="train"><span class="ico">🎯</span>Тренажёр</button>
+    <button data-tab="stats"><span class="ico">📊</span>Статистика</button>
+  </nav>
+
+  <!-- Модальное окно (примеры, редактирование) -->
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h2 id="modal-title"></h2>
+        <button id="modal-close" class="icon-btn" aria-label="Закрыть">✕</button>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
