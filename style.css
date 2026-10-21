@@ -51,6 +51,12 @@
   --r-lg: 20px;
   --tap: 44px;                 /* минимальная зона касания */
   --dur: 150ms;
+
+  /* Движение (скилл animate): встроенные CSS-кривые слишком слабые */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);       /* появление, нажатие, обратная связь */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);   /* перемещение по экрану */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);    /* шторка как в iOS */
+  --press: 160ms;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -133,7 +139,7 @@ input[type=text], input[type=search], select {
   border-radius: var(--r-sm);
   background: var(--bg);
   outline: none;
-  transition: border-color var(--dur) ease-out;
+  transition: border-color var(--dur) ease;
 }
 input:focus, select:focus { border-color: var(--primary); }
 input::placeholder { color: var(--muted); opacity: 1; }
@@ -146,14 +152,14 @@ input::placeholder { color: var(--muted); opacity: 1; }
   background: var(--primary-soft);
   color: var(--primary-ink);
   font-weight: 700;
-  transition: background-color var(--dur) ease-out, opacity var(--dur) ease-out;
+  transition: transform var(--press) var(--ease-out), background-color var(--dur) ease;
 }
 .btn .i { width: 20px; height: 20px; }
 .btn.primary { background: var(--accent); color: var(--on-accent); min-height: 48px; }
 .btn.danger { background: var(--bad-soft); color: var(--bad); }
 .btn.ok { background: var(--ok-soft); color: var(--ok); }
 .btn.block { width: 100%; }
-.btn:active:not(:disabled) { opacity: .8; }
+.btn:active:not(:disabled) { transform: scale(0.97); }
 .btn:disabled { opacity: .45; cursor: default; }
 
 .icon-btn {
@@ -161,9 +167,14 @@ input::placeholder { color: var(--muted); opacity: 1; }
   width: var(--tap); height: var(--tap);
   border: 0; border-radius: var(--r-sm);
   background: transparent; color: var(--muted);
-  transition: background-color var(--dur) ease-out, color var(--dur) ease-out;
+  transition: transform var(--press) var(--ease-out), background-color var(--dur) ease, color var(--dur) ease;
 }
-.icon-btn:hover, .icon-btn:active { background: var(--primary-soft); color: var(--primary-ink); }
+.icon-btn:active { background: var(--primary-soft); color: var(--primary-ink); transform: scale(0.97); }
+/* на телефоне :hover «залипает» после касания — только для мыши */
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover { background: var(--primary-soft); color: var(--primary-ink); }
+  .mode:hover:not(:disabled) { background: var(--primary-soft); }
+}
 
 .add-form { display: grid; gap: 8px; }
 
@@ -203,7 +214,9 @@ a { color: var(--primary-ink); font-weight: 600; }
   border: 0; border-radius: var(--r-sm);
   background: var(--primary-soft); color: var(--primary-ink);
   font-size: 14px; font-weight: 700;
+  transition: transform var(--press) var(--ease-out);
 }
+.word-actions .ex-btn:active { transform: scale(0.97); }
 
 .dots { display: flex; gap: 4px; }
 .dots i { width: 14px; height: 6px; border-radius: 3px; background: var(--muted-bg); display: block; }
@@ -235,24 +248,38 @@ a { color: var(--primary-ink); font-weight: 600; }
   border: 0; background: transparent; min-height: 60px; padding: 8px 0;
   font-size: 12px; font-weight: 600; color: var(--muted);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-  transition: color var(--dur) ease-out;
+  transition: color var(--dur) ease, transform var(--press) var(--ease-out);
 }
+.tabbar button:active { transform: scale(0.97); }
 .tabbar .i { width: 24px; height: 24px; }
 .tabbar button.active { color: var(--primary-ink); font-weight: 800; }
 
 /* ---------------- Модальное окно ---------------- */
 .modal {
   position: fixed; inset: 0; z-index: 20;
-  background: var(--scrim);
   display: flex; align-items: flex-end; justify-content: center;
+  visibility: visible;
+  transition: visibility 0s;
 }
-.modal.hidden { display: none; }
+/* закрытая шторка остаётся в DOM, чтобы уехать вниз, и прячется после анимации */
+.modal.hidden { visibility: hidden; pointer-events: none; transition: visibility 0s linear 500ms; }
+.modal::before {
+  content: ""; position: absolute; inset: 0;
+  background: var(--scrim);
+  transition: opacity 500ms var(--ease-drawer);
+}
+.modal.hidden::before { opacity: 0; }
 .modal-box {
+  position: relative;
+  transform: translateY(0);
+  transition: transform 500ms var(--ease-drawer);
   background: var(--card);
   width: 100%; max-width: 640px; max-height: 86vh; overflow-y: auto;
   border-radius: var(--r-lg) var(--r-lg) 0 0;
+  overscroll-behavior: contain;
   padding: 16px max(16px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
+.modal.hidden .modal-box { transform: translateY(100%); }
 .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
 .modal-head h2 { margin: 0; font-size: 22px; font-weight: 800; word-break: break-word; }
 
@@ -274,9 +301,9 @@ a { color: var(--primary-ink); font-weight: 600; }
   display: flex; align-items: center; gap: 16px; text-align: left;
   background: var(--card); border: 0; border-radius: var(--r);
   padding: 16px; width: 100%; min-height: 72px;
-  transition: background-color var(--dur) ease-out;
+  transition: transform var(--press) var(--ease-out), background-color var(--dur) ease;
 }
-.mode:active:not(:disabled) { background: var(--primary-soft); }
+.mode:active:not(:disabled) { background: var(--primary-soft); transform: scale(0.97); }
 .mode .ico {
   width: 44px; height: 44px; border-radius: 12px; flex: none;
   display: grid; place-items: center;
@@ -291,11 +318,13 @@ a { color: var(--primary-ink); font-weight: 600; }
   flex: 1; min-height: var(--tap);
   border: 1.5px solid var(--line); background: var(--card); border-radius: var(--r-sm);
   font-weight: 700; font-variant-numeric: tabular-nums;
+  transition: transform var(--press) var(--ease-out), background-color var(--dur) ease, border-color var(--dur) ease;
 }
+.seg button:active { transform: scale(0.97); }
 .seg button.on { border-color: var(--primary); color: var(--primary-ink); background: var(--primary-soft); }
 
 .progress { height: 8px; background: var(--muted-bg); border-radius: 99px; overflow: hidden; margin-bottom: 16px; }
-.progress div { height: 100%; background: var(--primary); transition: width .3s ease-out; }
+.progress div { height: 100%; width: 100%; background: var(--primary); transform-origin: left; transition: transform 250ms var(--ease-out); }
 
 .q-card { text-align: center; padding: 32px 16px; }
 .q-word { font-size: 32px; font-weight: 800; letter-spacing: -.02em; word-break: break-word; }
@@ -308,8 +337,10 @@ a { color: var(--primary-ink); font-weight: 600; }
   border: 1.5px solid var(--line); background: var(--card); border-radius: var(--r);
   padding: 14px 16px; font-size: 17px; font-weight: 600; text-align: left;
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  transition: background-color var(--dur) ease-out, border-color var(--dur) ease-out;
+  transition: transform var(--press) var(--ease-out), background-color var(--dur) ease, border-color var(--dur) ease, color var(--dur) ease;
 }
+.option:active { transform: scale(0.97); }
+.option .i { animation: pop 150ms var(--ease-out) backwards; }
 .option.right { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
 .option.wrong { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
 
@@ -350,12 +381,43 @@ a { color: var(--primary-ink); font-weight: 600; }
 .hard-list li:first-child { border-top: 0; }
 
 .toast {
-  position: fixed; left: 50%; bottom: calc(92px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  position: fixed; left: 50%; bottom: calc(92px + env(safe-area-inset-bottom));
+  transform: translate(-50%, 0); opacity: 1; visibility: visible;
+  transition: opacity 400ms ease, transform 400ms ease, visibility 0s;
   background: var(--text); color: var(--bg); padding: 12px 16px; border-radius: var(--r-sm); z-index: 30;
   font-size: 14px; font-weight: 600; width: max-content; max-width: calc(100vw - 32px); text-align: center;
 }
-.toast.hidden { display: none; }
+.toast.hidden {
+  opacity: 0; transform: translate(-50%, 100%); visibility: hidden;
+  transition: opacity 400ms ease, transform 400ms ease, visibility 0s linear 400ms;
+}
 
+/* ---------------- Появление ---------------- */
+@keyframes rise  { from { opacity: 0; transform: translateY(6px); } }
+@keyframes enter { from { opacity: 0; transform: translateY(-8px); } }   /* новое слово «выпадает» из поля ввода */
+@keyframes pop   { from { opacity: 0; transform: scale(0.9); } }
+@keyframes fade  { from { opacity: 0; } }
+
+.word.enter { animation: enter 300ms var(--ease-out) backwards; }
+.rise { animation: rise 300ms var(--ease-out) backwards; }
+
+/* Тренажёр: вопрос и варианты появляются с шагом 30 мс — тонко, вопросы идут часто */
+.q-card { animation: rise 200ms var(--ease-out) backwards; }
+.options .option { animation: rise 200ms var(--ease-out) backwards; }
+.options .option:nth-child(1) { animation-delay: 30ms; }
+.options .option:nth-child(2) { animation-delay: 60ms; }
+.options .option:nth-child(3) { animation-delay: 90ms; }
+.options .option:nth-child(4) { animation-delay: 120ms; }
+#fb > *, #back { animation: rise 200ms var(--ease-out) backwards; }
+
+/* Меньше движения: остаётся только прозрачность — она помогает понять смену состояния */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { transition: none !important; animation: none !important; }
+  .btn:active, .icon-btn:active, .option:active, .mode:active, .seg button:active,
+  .tabbar button:active, .word-actions .ex-btn:active { transform: none; }
+  .word.enter, .rise, .q-card, .options .option, #fb > *, #back, .option .i { animation-name: fade; }
+  .modal-box, .modal.hidden .modal-box { transform: none; }
+  .modal-box { transition: opacity 200ms ease; }
+  .modal.hidden .modal-box { opacity: 0; }
+  .toast, .toast.hidden { transform: translate(-50%, 0); }
+  .progress div { transition: none; }
 }

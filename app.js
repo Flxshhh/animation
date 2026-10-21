@@ -85,6 +85,52 @@ function shuffle(arr) {
   return a;
 }
 
+/* ---------------------------- Анимации -----------------------------
+ * Правила (скилл animate, философия Эмиля Ковальского):
+ *  - только transform и opacity; кривая --ease-out из style.css;
+ *  - UI-анимации не дольше 300 мс;
+ *  - prefers-reduced-motion: без движения, остаётся только прозрачность. */
+const EASE_OUT = 'cubic-bezier(0.23, 1, 0.32, 1)';
+const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* Новое слово: момент появления. renderWords продолжает анимацию с того же места,
+ * даже если список перерисовался посреди неё (отрицательная задержка). */
+let entering = { id: null, at: 0 };
+const ENTER_MS = 300;
+
+/**
+ * FLIP: запоминаем позиции слов, меняем список, плавно доводим слова
+ * со старого места на новое — список не «прыгает», когда слово добавили или удалили.
+ */
+function flipList(mutate) {
+  const before = new Map();
+  document.querySelectorAll('#word-list .word[data-id]').forEach(el => {
+    before.set(el.dataset.id, el.getBoundingClientRect().top);
+  });
+  mutate();
+  if (reduceMotion() || !before.size) return;
+  document.querySelectorAll('#word-list .word[data-id]').forEach(el => {
+    const prev = before.get(el.dataset.id);
+    if (prev === undefined) return;
+    const dy = prev - el.getBoundingClientRect().top;
+    if (Math.abs(dy) < 1) return;
+    el.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }],
+      { duration: 300, easing: EASE_OUT });
+  });
+}
+
+/* Плавный счётчик для итогов тренировки (редкий экран — тут можно порадовать) */
+function countUp(el, to, suffix = '') {
+  if (reduceMotion() || to === 0) { el.textContent = to + suffix; return; }
+  const start = performance.now(), dur = 600;
+  const step = now => {
+    const t = Math.min(1, (now - start) / dur);
+    el.textContent = Math.round(to * (1 - (1 - t) ** 3)) + suffix;   // ease-out cubic
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 let toastTimer;
 function toast(msg) {
   const t = $('#toast');
@@ -354,8 +400,10 @@ async function addWord(en, ruManual) {
   };
   state.words.unshift(w);
   saveState();
-  renderWords();
-  await enrichWord(w, !ruManual);
+  entering = { id: w.id, at: performance.now() };
+  // перевод из встроенного словаря подставляется сразу, поэтому слово
+  // появляется в списке один раз и уже с переводом
+  await enrichWord(w, !ruManual, true);
 }
 
 /* Русская транскрипция: из словаря, иначе грубо из IPA */
@@ -365,11 +413,16 @@ function pronCyr(w) { return w.ruPron || ipaToCyr(w.phon); }
  * Догружает перевод, транскрипцию и примеры для слова.
  * Сначала встроенный словарь (работает без интернета), потом онлайн-API.
  */
-async function enrichWord(w, needTranslation = true) {
-  w.pending = true;
-  renderWords();
-
-  try { await loadDict(); } catch (e) { console.warn('dict', e); }
+async function enrichWord(w, needTranslation = true, animate = false) {
+  // первая перерисовка после добавления — с FLIP, остальные обычные
+  const render = () => {
+    if (animate) { animate = false; flipList(renderWords); } else renderWords();
+  };
+  if (!DICT) {
+    w.pending = true;
+    render();
+    try { await loadDict(); } catch (e) { console.warn('dict', e); }
+  }
   const local = localLookup(w.en);
   if (local) {
     if (local.fixed && !state.words.some(x => x !== w && x.en.toLowerCase() === local.fixed)) {
@@ -380,7 +433,7 @@ async function enrichWord(w, needTranslation = true) {
     Object.assign(w, { alts: local.alts, pos: local.pos, phon: local.phon, ruPron: local.ruPron,
       examples: local.examples, notFound: false, pending: false });
     saveState();
-    renderWords();
+    render();
     return;
   }
 
@@ -389,10 +442,12 @@ async function enrichWord(w, needTranslation = true) {
     w.notFound = true;
     w.pending = false;
     saveState();
-    renderWords();
+    render();
     return;
   }
 
+  w.pending = true;
+  render();
   const [tr, dict] = await Promise.allSettled([
     needTranslation ? translate(w.en) : Promise.resolve(null),
     lookupDictionary(w.en),
@@ -415,13 +470,22 @@ async function enrichWord(w, needTranslation = true) {
   renderWords();
 }
 
-function deleteWord(id, ask = true) {
+async function deleteWord(id, ask = true) {
   const w = findWord(id);
   if (!w) return;
   if (ask && !confirm(`Удалить «${w.en}»?`)) return;
+  // уход быстрее появления: 180 мс, растворение с лёгким уменьшением
+  const el = document.querySelector(`#word-list .word[data-id="${id}"]`);
+  if (el && el.offsetParent) {
+    el.style.pointerEvents = 'none';
+    await el.animate(
+      reduceMotion() ? [{ opacity: 1 }, { opacity: 0 }]
+        : [{ opacity: 1, transform: 'scale(1)' }, { opacity: 0, transform: 'scale(0.97)' }],
+      { duration: 180, easing: EASE_OUT, fill: 'forwards' }).finished;
+  }
   state.words = state.words.filter(x => x.id !== id);
   saveState();
-  renderWords();
+  flipList(renderWords);
   toast(`«${w.en}» удалено`);
 }
 
@@ -439,6 +503,12 @@ function altsText(w) {
     for (const t of a.terms) if (t.toLowerCase() !== (w.ru || '').toLowerCase()) terms.push(t);
   }
   return [...new Set(terms)].slice(0, 6).join(', ');
+}
+
+/* Класс появления для только что добавленного слова (см. entering) */
+function enter(id) {
+  const t = performance.now() - entering.at;
+  return id === entering.id && t < ENTER_MS ? ` enter" style="animation-delay:-${Math.round(t)}ms` : '';
 }
 
 function renderWords() {
@@ -481,7 +551,7 @@ function renderWords() {
         <button class="btn danger" data-act="del" data-id="${w.id}">Удалить</button>
       </div>` : '';
     return `
-      <li class="word ${isLearned(w) ? 'learned' : ''}">
+      <li class="word ${isLearned(w) ? 'learned' : ''}${enter(w.id)}" data-id="${w.id}">
         <div class="word-top">
           <span class="word-en">${esc(w.en)}</span>${w.pos ? `<span class="word-pos">${esc(w.pos)}</span>` : ''}${phon}
         </div>
@@ -812,7 +882,7 @@ function renderQuestion() {
       <span>${session.i + 1} / ${session.queue.length}</span>
       <span style="text-align:right">верно ${session.correct} · ошибок ${session.wrong}</span>
     </div>
-    <div class="progress"><div style="width:${session.i / session.queue.length * 100}%"></div></div>`;
+    <div class="progress"><div id="prog" style="transform:scaleX(${Math.max(0, session.i - 1) / session.queue.length})"></div></div>`;
   const footer = `<button class="btn block" id="quit" style="margin-top:14px">Завершить</button>`;
 
   let body = '';
@@ -869,6 +939,10 @@ function renderQuestion() {
   }
 
   root.innerHTML = progress + body + footer;
+  // прогресс доезжает от прошлого вопроса до текущего (transition на transform)
+  const prog = $('#prog');
+  prog.getBoundingClientRect();
+  prog.style.transform = `scaleX(${session.i / session.queue.length})`;
   $('#quit').onclick = () => (session.correct + session.wrong ? renderResult() : endSession());
 
   if (mode === 'listen') {
@@ -967,7 +1041,7 @@ function renderResult() {
 
   $('#train-root').innerHTML = `
     <div class="card center">
-      <div class="result-big">${pct}%</div>
+      <div class="result-big" id="pct">0%</div>
       <div class="muted">Верно ${session.correct} из ${total}</div>
     </div>
     ${learned.length ? `
@@ -991,6 +1065,13 @@ function renderResult() {
       <button class="btn" id="back-home">К режимам</button>
       <button class="btn primary" id="again">Ещё раз</button>
     </div>`;
+
+  // итоги видят раз за тренировку: блоки появляются по очереди, процент «досчитывается»
+  [...$('#train-root').children].forEach((el, k) => {
+    el.classList.add('rise');
+    el.style.animationDelay = `${k * 60}ms`;
+  });
+  countUp($('#pct'), pct, '%');
 
   const mode = session.mode;
   $('#back-home').onclick = endSession;
