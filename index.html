@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#4f46e5">
+  <meta name="theme-color" content="#F0FDFA" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#042F2E" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Слова">
@@ -11,6 +12,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="preload" href="fonts/manrope-cyrillic-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -22,15 +24,18 @@
     <!-- ===== Вкладка «Слова» ===== -->
     <section id="tab-words" class="tab active">
       <form id="add-form" class="card add-form" autocomplete="off">
+        <label for="add-en" class="sr-only">Английское слово или фраза</label>
         <input id="add-en" type="text" placeholder="Английское слово или фраза" autocapitalize="none" spellcheck="false" required>
+        <label for="add-ru" class="sr-only">Свой перевод</label>
         <input id="add-ru" type="text" placeholder="Свой перевод (необязательно)">
         <button type="submit" class="btn primary">Добавить</button>
         <p id="dict-note" class="muted small" style="margin:0">Загружаю словарь…</p>
       </form>
 
       <div class="toolbar">
+        <label for="search" class="sr-only">Поиск</label>
         <input id="search" type="search" placeholder="Поиск…">
-        <select id="filter">
+        <select id="filter" aria-label="Какие слова показать">
           <option value="all">Все</option>
           <option value="learning">Учу</option>
           <option value="learned">Выучено</option>
@@ -52,10 +57,10 @@
     </section>
   </main>
 
-  <nav class="tabbar">
-    <button data-tab="words" class="active"><span class="ico">📚</span>Слова</button>
-    <button data-tab="train"><span class="ico">🎯</span>Тренажёр</button>
-    <button data-tab="stats"><span class="ico">📊</span>Статистика</button>
+  <nav class="tabbar" aria-label="Разделы">
+    <button data-tab="words" class="active" aria-current="page"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>Слова</button>
+    <button data-tab="train"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>Тренажёр</button>
+    <button data-tab="stats"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>Статистика</button>
   </nav>
 
   <!-- Модальное окно (примеры, редактирование) -->
@@ -63,13 +68,13 @@
     <div class="modal-box">
       <div class="modal-head">
         <h2 id="modal-title"></h2>
-        <button id="modal-close" class="icon-btn" aria-label="Закрыть">✕</button>
+        <button id="modal-close" class="icon-btn" aria-label="Закрыть"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </div>
       <div id="modal-body"></div>
     </div>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
   <script src="app.js"></script>
 </body>

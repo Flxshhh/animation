@@ -1,9 +1,10 @@
 // Service worker: сохраняет приложение и словарь на телефоне,
 // чтобы сайт открывался и добавлял слова без интернета.
 // При изменении файлов приложения увеличь версию — старый кэш удалится.
-const CACHE = 'wordbook-v2';
+const CACHE = 'wordbook-v3';
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon.svg',
+  'fonts/manrope-cyrillic-wght-normal.woff2', 'fonts/manrope-latin-wght-normal.woff2',
   'dict/ru.json', 'dict/pron.json', 'dict/ex.json',
 ];
 
