@@ -42,6 +42,27 @@ let state = loadState();
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
+/* Иконки — один набор в стиле Lucide (обводка 2px). aria-hidden: подпись даёт сама кнопка */
+const svg = body => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const ICON = {
+  say: svg('<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>'),
+  edit: svg('<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>'),
+  del: svg('<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>'),
+  retry: svg('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
+  enRu: svg('<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>'),
+  ruEn: svg('<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>'),
+  write: svg('<rect width="20" height="16" x="2" y="4" rx="2"/><path d="M6 8h.01M10 8h.01M14 8h.01M18 8h.01M8 12h.01M12 12h.01M16 12h.01M7 16h10"/>'),
+  listen: svg('<path d="M6 8.5a6.5 6.5 0 1 1 13 0c0 6-6 6-6 10a3.5 3.5 0 1 1-7 0"/><path d="M15 8.5a2.5 2.5 0 0 0-5 0v1a2 2 0 1 1 0 4"/>'),
+  cards: svg('<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>'),
+  mix: svg('<path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/>'),
+  check: svg('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
+  cross: svg('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'),
+  flame: svg('<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>'),
+  down: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'),
+  up: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>'),
+  next: svg('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>'),
+};
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -381,7 +402,7 @@ async function enrichWord(w, needTranslation = true) {
     w.alts = tr.value.alts;
     w.notFound = false;
   } else if (needTranslation && !w.ru) {
-    toast('Не удалось получить перевод — проверь интернет или впиши вручную (✎)');
+    toast('Не удалось получить перевод — проверь интернет или впиши вручную через «изменить»');
   }
   if (dict.status === 'fulfilled' && dict.value) {
     w.phon = dict.value.phon;
@@ -438,7 +459,7 @@ function renderWords() {
     ? `Всего: ${state.words.length} · выучено: ${learned}` : '';
 
   if (!state.words.length) {
-    list.innerHTML = '<li class="empty">Пока пусто.<br>Впиши первое английское слово выше 👆</li>';
+    list.innerHTML = '<li class="empty">Пока пусто.<br>Впиши первое английское слово в поле выше.</li>';
     return;
   }
   if (!items.length) {
@@ -451,12 +472,12 @@ function renderWords() {
       ? `<span class="word-phon">${esc(w.phon)} · ≈ [${esc(pronCyr(w))}]</span>` : '';
     const ru = w.pending && !w.ru ? '<span class="loading">перевожу…</span>'
       : w.ru ? esc(w.ru)
-      : w.notFound ? '<span class="loading">нет во встроенном словаре — переведу, когда появится интернет (или впиши сам ✎)</span>'
+      : w.notFound ? '<span class="loading">нет во встроенном словаре — переведу, когда появится интернет (или впиши сам через «изменить»)</span>'
       : '— нет перевода —';
     const alts = altsText(w);
     const learnedBanner = isLearned(w) ? `
       <div class="learned-banner">
-        <span>🎉 Слово выучено!</span>
+        <span>${ICON.check}Слово выучено</span>
         <button class="btn danger" data-act="del" data-id="${w.id}">Удалить</button>
       </div>` : '';
     return `
@@ -469,10 +490,10 @@ function renderWords() {
         <div class="word-bottom">
           ${dotsHTML(w.level)}
           <div class="word-actions">
-            <button class="icon-btn" data-act="say" data-id="${w.id}" aria-label="Произнести">🔊</button>
+            <button class="icon-btn" data-act="say" data-id="${w.id}" aria-label="Произнести ${esc(w.en)}">${ICON.say}</button>
             <button class="ex-btn" data-act="ex" data-id="${w.id}">Примеры</button>
-            <button class="icon-btn" data-act="edit" data-id="${w.id}" aria-label="Редактировать">✎</button>
-            <button class="icon-btn" data-act="del" data-id="${w.id}" aria-label="Удалить">🗑</button>
+            <button class="icon-btn" data-act="edit" data-id="${w.id}" aria-label="Изменить ${esc(w.en)}">${ICON.edit}</button>
+            <button class="icon-btn" data-act="del" data-id="${w.id}" aria-label="Удалить ${esc(w.en)}">${ICON.del}</button>
           </div>
         </div>
         ${learnedBanner}
@@ -541,7 +562,7 @@ async function showExamples(id) {
       <div class="sent">${highlight(e.en, w.en)}</div>
       <div class="tr" id="ex-tr-${i}">${e.ru ? esc(e.ru) : ''}</div>
       <div class="row">
-        <button class="btn" data-say="${esc(e.en)}">🔊</button>
+        <button class="btn" data-say="${esc(e.en)}">${ICON.say}Послушать</button>
         ${e.ru ? '' : `<button class="btn" data-tr="${i}">Перевести</button>`}
       </div>
     </div>`).join('');
@@ -590,7 +611,7 @@ function editWord(id) {
       <label>Перевод</label>
       <input type="text" id="ed-ru" value="${esc(w.ru)}">
       <button class="btn primary" type="submit">Сохранить</button>
-      <button class="btn" type="button" id="ed-retr">🔄 Перевести заново</button>
+      <button class="btn" type="button" id="ed-retr">Перевести заново</button>
       <button class="btn" type="button" id="ed-reset">Сбросить прогресс слова</button>
     </form>`);
   $('#edit-form').onsubmit = e => {
@@ -641,7 +662,10 @@ const TITLES = { words: 'Мои слова', train: 'Тренажёр', stats: '
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
-  document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tabbar button').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === name);
+    if (b.dataset.tab === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
   $('#title').textContent = TITLES[name];
   if (name === 'words') renderWords();
   if (name === 'train' && !session) renderTrainHome();
@@ -661,11 +685,11 @@ document.querySelectorAll('.tabbar button').forEach(b =>
  * слово не повторяли, тем выше шанс попасться.
  */
 const MODES = {
-  en_ru:  { ico: '🇬🇧→🇷🇺', name: 'Выбери перевод', desc: 'Английское слово → 4 варианта', min: 2 },
-  ru_en:  { ico: '🇷🇺→🇬🇧', name: 'Обратный выбор', desc: 'Русское слово → 4 варианта', min: 2 },
-  write:  { ico: '⌨️', name: 'Напиши по-английски', desc: 'Видишь перевод — пишешь слово', min: 1 },
-  listen: { ico: '👂', name: 'На слух', desc: 'Слушаешь и выбираешь перевод', min: 2 },
-  cards:  { ico: '🃏', name: 'Карточки', desc: 'Вспомни сам и честно оцени', min: 1 },
+  en_ru:  { ico: ICON.enRu, name: 'Выбери перевод', desc: 'Английское слово → 4 варианта', min: 2 },
+  ru_en:  { ico: ICON.ruEn, name: 'Обратный выбор', desc: 'Русское слово → 4 варианта', min: 2 },
+  write:  { ico: ICON.write, name: 'Напиши по-английски', desc: 'Видишь перевод — пишешь слово', min: 1 },
+  listen: { ico: ICON.listen, name: 'На слух', desc: 'Слушаешь и выбираешь перевод', min: 2 },
+  cards:  { ico: ICON.cards, name: 'Карточки', desc: 'Вспомни сам и честно оцени', min: 1 },
 };
 
 let session = null;
@@ -695,7 +719,7 @@ function renderTrainHome() {
   const allReady = state.words.filter(w => w.ru).length;
 
   if (!state.words.length) {
-    root.innerHTML = '<div class="empty">Сначала добавь слова во вкладке «Слова» 📚</div>';
+    root.innerHTML = '<div class="empty">Сначала добавь слова во вкладке «Слова».</div>';
     return;
   }
 
@@ -714,7 +738,7 @@ function renderTrainHome() {
           <span><b>${m.name}</b><span class="small">${m.desc}</span></span>
         </button>`).join('')}
       <button class="mode" data-mode="mix" ${pool.length < 2 ? 'disabled' : ''}>
-        <span class="ico">🔀</span>
+        <span class="ico">${ICON.mix}</span>
         <span><b>Микс</b><span class="small">Все режимы вперемешку</span></span>
       </button>
     </div>`;
@@ -786,7 +810,7 @@ function renderQuestion() {
   const progress = `
     <div class="row2 small muted" style="margin-bottom:6px">
       <span>${session.i + 1} / ${session.queue.length}</span>
-      <span style="text-align:right">✅ ${session.correct} · ❌ ${session.wrong}</span>
+      <span style="text-align:right">верно ${session.correct} · ошибок ${session.wrong}</span>
     </div>
     <div class="progress"><div style="width:${session.i / session.queue.length * 100}%"></div></div>`;
   const footer = `<button class="btn block" id="quit" style="margin-top:14px">Завершить</button>`;
@@ -801,7 +825,7 @@ function renderQuestion() {
       ? `<div class="q-word">${esc(w.en)}</div>${w.phon ? `<div class="q-sub">${esc(w.phon)}</div>` : ''}`
       : mode === 'ru_en'
         ? `<div class="q-word">${esc(w.ru)}</div>`
-        : `<button class="btn primary" id="replay" style="font-size:26px;padding:16px 26px">🔊</button>
+        : `<button class="btn primary" id="replay" style="padding:16px 24px">${ICON.say}Прослушать слово</button>
            <div class="q-sub">Нажми, чтобы прослушать ещё раз</div>`;
     body = `
       <div class="card q-card">
@@ -838,8 +862,8 @@ function renderQuestion() {
         </div>
       </div>
       <div class="row2" id="grade" style="display:none">
-        <button class="btn danger" data-grade="0">😕 Не вспомнил</button>
-        <button class="btn ok" data-grade="1">😎 Знаю</button>
+        <button class="btn danger" data-grade="0">Не вспомнил</button>
+        <button class="btn ok" data-grade="1">Знаю</button>
       </div>
       <button class="btn block primary" id="show">Показать перевод</button>`;
   }
@@ -859,9 +883,9 @@ function renderQuestion() {
     const field = mode === 'ru_en' ? 'en' : 'ru';
     const ok = btn.dataset.opt === w[field];
     root.querySelectorAll('[data-opt]').forEach(b => {
-      if (b.dataset.opt === w[field]) b.classList.add('right');
+      if (b.dataset.opt === w[field]) { b.classList.add('right'); b.insertAdjacentHTML('beforeend', ICON.check); }
     });
-    if (!ok) btn.classList.add('wrong');
+    if (!ok) { btn.classList.add('wrong'); btn.insertAdjacentHTML('beforeend', ICON.cross); }
     recordAnswer(w, ok);
     if (mode !== 'listen') speak(w.en, w.audio);
     showFeedback(w, ok);
@@ -918,13 +942,13 @@ function showFeedback(w, ok, note = '') {
   const learnedNow = session.newlyLearned.includes(w.id);
   fb.innerHTML = `
     <div class="feedback ${ok ? 'ok' : 'bad'}">
-      ${ok ? '✅ Верно!' : '❌ Ошибка'} ${note ? `<span class="small">(${esc(note)})</span>` : ''}
+      <div class="title">${ok ? ICON.check + 'Верно' : ICON.cross + 'Ошибка'} ${note ? `<span class="small">(${esc(note)})</span>` : ''}</div>
       <div style="font-weight:400;margin-top:4px">
         <b>${esc(w.en)}</b> ${w.phon ? `<span class="small">${esc(w.phon)}</span>` : ''} — ${esc(w.ru)}
       </div>
-      ${learnedNow ? '<div style="margin-top:4px">🎉 Слово выучено!</div>' : ''}
+      ${learnedNow ? '<div style="margin-top:4px">Слово выучено — его можно удалить в итогах тренировки.</div>' : ''}
     </div>
-    <button class="btn primary block" id="next">Дальше →</button>`;
+    <button class="btn primary block" id="next">Дальше ${ICON.next}</button>`;
   $('#next').onclick = next;
   $('#next').focus();
 }
@@ -948,19 +972,19 @@ function renderResult() {
     </div>
     ${learned.length ? `
       <div class="card">
-        <h3>🎉 Выучено в этой тренировке</h3>
+        <h2 class="sec">Выучено в этой тренировке</h2>
         <ul class="hard-list">${learned.map(w => `
           <li><span><b>${esc(w.en)}</b> — ${esc(w.ru)}</span>
-            <button class="icon-btn" data-del="${w.id}" aria-label="Удалить">🗑</button></li>`).join('')}
+            <button class="icon-btn" data-del="${w.id}" aria-label="Удалить ${esc(w.en)}">${ICON.del}</button></li>`).join('')}
         </ul>
         <button class="btn danger block" id="del-learned" style="margin-top:8px">Удалить все выученные из списка</button>
       </div>` : ''}
     ${mistakes.length ? `
       <div class="card">
-        <h3>Повтори эти слова</h3>
+        <h2 class="sec">Повтори эти слова</h2>
         <ul class="hard-list">${mistakes.map(w => `
           <li><span><b>${esc(w.en)}</b> — ${esc(w.ru)}</span>
-            <button class="icon-btn" data-say="${w.id}">🔊</button></li>`).join('')}
+            <button class="icon-btn" data-say="${w.id}" aria-label="Произнести ${esc(w.en)}">${ICON.say}</button></li>`).join('')}
         </ul>
       </div>` : ''}
     <div class="row2">
@@ -1034,13 +1058,13 @@ function renderStats() {
       <div class="stat"><div class="num">${words.length}</div><div class="lbl">слов в словаре</div></div>
       <div class="stat"><div class="num" style="color:var(--ok)">${learned}</div><div class="lbl">выучено</div></div>
       <div class="stat"><div class="num">${acc}%</div><div class="lbl">точность ответов</div></div>
-      <div class="stat"><div class="num">🔥 ${streakDays()}</div><div class="lbl">дней подряд</div></div>
+      <div class="stat"><div class="num">${ICON.flame}${streakDays()}</div><div class="lbl">дней подряд</div></div>
       <div class="stat"><div class="num">${today.c + today.w}</div><div class="lbl">ответов сегодня</div></div>
       <div class="stat"><div class="num">${totalC + totalW}</div><div class="lbl">ответов всего</div></div>
     </div>
 
     <div class="card">
-      <h3>Уровень знания слов</h3>
+      <h2 class="sec">Уровень знания слов</h2>
       ${byLevel.map((n, lvl) => `
         <div class="bar-row">
           <span>${LEVEL_NAMES[lvl]}</span>
@@ -1050,10 +1074,10 @@ function renderStats() {
     </div>
 
     <div class="card">
-      <h3>Активность за неделю</h3>
+      <h2 class="sec">Активность за неделю</h2>
       <div class="week">
         ${days.map(d => `
-          <div class="col" title="✅ ${d.c} ❌ ${d.w}">
+          <div class="col" title="верно ${d.c}, ошибок ${d.w}">
             <span>${d.c + d.w || ''}</span>
             <div class="stack" style="height:${(d.c + d.w) / maxDay * 80}%">
               <div class="c" style="flex:${d.c}"></div><div class="w" style="flex:${d.w}"></div>
@@ -1061,23 +1085,24 @@ function renderStats() {
             <span>${d.label}</span>
           </div>`).join('')}
       </div>
+      <div class="legend"><span><i style="background:var(--ok)"></i>верно</span><span><i style="background:var(--bad)"></i>ошибки</span></div>
     </div>
 
     ${hard.length ? `
       <div class="card">
-        <h3>Трудные слова</h3>
+        <h2 class="sec">Трудные слова</h2>
         <ul class="hard-list">
           ${hard.map(w => `<li><span><b>${esc(w.en)}</b> — ${esc(w.ru)}</span>
-            <span class="small muted">✅${w.correct} ❌${w.wrong}</span></li>`).join('')}
+            <span class="small muted">верно ${w.correct} · ошибок ${w.wrong}</span></li>`).join('')}
         </ul>
       </div>` : ''}
 
     <div class="card">
-      <h3>Резервная копия</h3>
+      <h2 class="sec">Резервная копия</h2>
       <p class="small muted">Слова хранятся только в этом браузере. Сохрани файл, чтобы перенести их на другое устройство.</p>
       <div class="row2">
-        <button class="btn" id="export">⬇️ Экспорт</button>
-        <button class="btn" id="import">⬆️ Импорт</button>
+        <button class="btn" id="export">${ICON.down}Экспорт</button>
+        <button class="btn" id="import">${ICON.up}Импорт</button>
       </div>
       <input type="file" id="import-file" accept="application/json,.json" hidden>
       <button class="btn danger block" id="reset-stats" style="margin-top:8px">Сбросить статистику</button>
