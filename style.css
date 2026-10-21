@@ -121,6 +121,7 @@ input:focus, select:focus { border-color: var(--primary); }
 .word-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .word-en { font-size: 19px; font-weight: 700; word-break: break-word; }
 .word-phon { color: var(--muted); font-size: 14px; }
+.word-pos { color: var(--muted); font-size: 12px; font-style: italic; }
 .word-ru { margin-top: 4px; font-size: 16px; }
 .word-alts { color: var(--muted); font-size: 13px; margin-top: 2px; }
 

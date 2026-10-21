@@ -3,7 +3,11 @@
 /* =====================================================================
  * Мои слова — PWA для изучения английских слов.
  * Данные хранятся в localStorage телефона, сервер не нужен.
- * Внешние бесплатные API:
+ * Работает без интернета: перевод, транскрипция и примеры берутся из
+ * встроенного словаря dict/*.json (собран tools/build_dict.py из
+ * OpenRussian, CMU Pronouncing Dictionary и WordNet), а service worker
+ * кэширует приложение и словарь на телефоне.
+ * Если слова нет в словаре и есть интернет — запасные бесплатные API:
  *   - Google Translate (неофициальный endpoint gtx) — перевод + варианты
  *   - MyMemory — запасной переводчик
  *   - dictionaryapi.dev — транскрипция (IPA), аудио, примеры употребления
@@ -157,6 +161,94 @@ async function lookupDictionary(word) {
   }
 }
 
+/* ---------------------- Встроенный словарь ------------------------- */
+/* ru.json:   "run" → "гл:бежа́ть;сущ:ход;…"   (часть речи:перевод, по убыванию частоты)
+ * pron.json: "water" → "/ˈwɔtɚ/|уОтэр"        (IPA | по-русски, ударный слог заглавными)
+ * ex.json:   "water" → ["Water the fields", …] (английские примеры из WordNet) */
+
+let DICT = null;
+let dictPromise = null;
+const POS_RU = { 'сущ': 'сущ.', 'гл': 'гл.', 'прил': 'прил.' };
+
+function loadDict() {
+  if (!dictPromise) {
+    dictPromise = Promise.all(['ru', 'pron', 'ex'].map(n =>
+      fetch(`dict/${n}.json`).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })))
+      .then(([ru, pron, ex]) => { DICT = { ru, pron, ex }; return DICT; })
+      .catch(e => { dictPromise = null; throw e; });
+  }
+  return dictPromise;
+}
+
+/* Неправильные глаголы и формы, которые не сводятся к словарной форме правилами */
+const IRREGULAR = {
+  went: 'go', gone: 'go', was: 'be', were: 'be', been: 'be', is: 'be', are: 'be', am: 'be',
+  had: 'have', has: 'have', did: 'do', done: 'do', does: 'do', said: 'say', made: 'make',
+  took: 'take', taken: 'take', saw: 'see', seen: 'see', came: 'come', got: 'get', gotten: 'get',
+  gave: 'give', given: 'give', knew: 'know', known: 'know', told: 'tell', found: 'find',
+  felt: 'feel', brought: 'bring', began: 'begin', begun: 'begin', kept: 'keep', held: 'hold',
+  wrote: 'write', written: 'write', stood: 'stand', heard: 'hear', meant: 'mean', met: 'meet',
+  ran: 'run', paid: 'pay', sat: 'sit', spoke: 'speak', spoken: 'speak', led: 'lead', grew: 'grow',
+  grown: 'grow', lost: 'lose', fell: 'fall', fallen: 'fall', sent: 'send', built: 'build',
+  understood: 'understand', drew: 'draw', drawn: 'draw', broke: 'break', broken: 'break',
+  spent: 'spend', rose: 'rise', drove: 'drive', driven: 'drive', bought: 'buy', wore: 'wear',
+  worn: 'wear', chose: 'choose', chosen: 'choose', threw: 'throw', thrown: 'throw', caught: 'catch',
+  taught: 'teach', ate: 'eat', eaten: 'eat', fought: 'fight', flew: 'fly', flown: 'fly', sang: 'sing',
+  sung: 'sing', swam: 'swim', slept: 'sleep', sold: 'sell', won: 'win', forgot: 'forget',
+  forgotten: 'forget', hid: 'hide', hidden: 'hide', woke: 'wake', woken: 'wake', shook: 'shake',
+  children: 'child', men: 'man', women: 'woman', people: 'person', feet: 'foot', teeth: 'tooth',
+  mice: 'mouse', geese: 'goose', better: 'good', best: 'good', worse: 'bad', worst: 'bad',
+};
+
+/* Возможные словарные формы: cats → cat, running → run, studied → study… */
+/* Формы, которые чаще ищут как самостоятельные слова: thought — «мысль», left — «левый» */
+const STANDALONE = new Set(['thought', 'left', 'saw', 'felt', 'found', 'better', 'best', 'worse', 'worst',
+  'people', 'children', 'men', 'women', 'feet', 'teeth', 'mice', 'geese', 'lay', 'hidden', 'broken', 'lost']);
+
+function lemmaCandidates(w) {
+  // went → go: у неправильных форм сначала начальная форма
+  const out = IRREGULAR[w] && !STANDALONE.has(w) ? [IRREGULAR[w], w] : [w];
+  const add = s => { if (s && s.length > 1 && !out.includes(s)) out.push(s); };
+  if (IRREGULAR[w]) add(IRREGULAR[w]);
+  if (w.includes(' ')) return out;
+  const undouble = b => (/([bdgklmnprtz])\1$/.test(b) ? b.slice(0, -1) : b);
+  if (w.endsWith('ies')) add(w.slice(0, -3) + 'y');
+  if (w.endsWith('es')) add(w.slice(0, -2));
+  if (w.endsWith('s') && !w.endsWith('ss')) add(w.slice(0, -1));
+  if (w.endsWith('ied')) add(w.slice(0, -3) + 'y');
+  if (w.endsWith('ed')) { const b = w.slice(0, -2); add(b); add(b + 'e'); add(undouble(b)); }
+  if (w.endsWith('ing')) { const b = w.slice(0, -3); add(b); add(b + 'e'); add(undouble(b)); }
+  if (w.endsWith('ier')) add(w.slice(0, -3) + 'y');
+  if (w.endsWith('iest')) add(w.slice(0, -4) + 'y');
+  if (w.endsWith('er')) { const b = w.slice(0, -2); add(b); add(b + 'e'); add(undouble(b)); }
+  if (w.endsWith('est')) { const b = w.slice(0, -3); add(b); add(b + 'e'); add(undouble(b)); }
+  if (w.endsWith('ly')) add(w.slice(0, -2));
+  return out;
+}
+
+/** Статья из встроенного словаря или null, если слова там нет. */
+function localLookup(en) {
+  if (!DICT) return null;
+  const q = en.toLowerCase().trim().replace(/[’`]/g, "'").replace(/^(to|a|an|the)\s+/, '');
+  const key = lemmaCandidates(q).find(k => DICT.ru[k]);
+  if (!key) return null;
+  const items = DICT.ru[key].split(';').map(s => {
+    const i = s.indexOf(':');
+    return i > 0 ? { pos: s.slice(0, i), ru: s.slice(i + 1) } : { pos: '', ru: s };
+  });
+  const pron = key.split(' ').map(t => DICT.pron[t]);
+  const known = pron.every(Boolean);
+  return {
+    fixed: key !== q ? key : '',
+    ru: items[0].ru,
+    alts: [{ pos: '', terms: items.slice(1).map(i => i.ru) }],
+    pos: POS_RU[items[0].pos] || '',
+    phon: known ? '/' + pron.map(p => p.split('|')[0].slice(1, -1)).join(' ') + '/' : '',
+    ruPron: known ? pron.map(p => p.split('|')[1]).join(' ') : '',
+    examples: (DICT.ex[key] || []).map(e => ({ pos: '', def: '', en: e })),
+  };
+}
+
 /* -------------- Транскрипция IPA → русские буквы (≈) --------------- */
 /* Это приблизительно: в русском нет многих английских звуков (θ, ð, æ…).
  * Порядок важен — сначала длинные сочетания, потом одиночные символы. */
@@ -245,10 +337,41 @@ async function addWord(en, ruManual) {
   await enrichWord(w, !ruManual);
 }
 
-/** Догружает перевод, транскрипцию и примеры для слова. */
+/* Русская транскрипция: из словаря, иначе грубо из IPA */
+function pronCyr(w) { return w.ruPron || ipaToCyr(w.phon); }
+
+/**
+ * Догружает перевод, транскрипцию и примеры для слова.
+ * Сначала встроенный словарь (работает без интернета), потом онлайн-API.
+ */
 async function enrichWord(w, needTranslation = true) {
   w.pending = true;
   renderWords();
+
+  try { await loadDict(); } catch (e) { console.warn('dict', e); }
+  const local = localLookup(w.en);
+  if (local) {
+    if (local.fixed && !state.words.some(x => x !== w && x.en.toLowerCase() === local.fixed)) {
+      toast(`Сохранено в словарной форме: ${w.en} → ${local.fixed}`);
+      w.en = local.fixed;
+    }
+    if (needTranslation || !w.ru) w.ru = local.ru;
+    Object.assign(w, { alts: local.alts, pos: local.pos, phon: local.phon, ruPron: local.ruPron,
+      examples: local.examples, notFound: false, pending: false });
+    saveState();
+    renderWords();
+    return;
+  }
+
+  if (!navigator.onLine) {
+    // переведём позже, когда появится интернет (см. retryOffline)
+    w.notFound = true;
+    w.pending = false;
+    saveState();
+    renderWords();
+    return;
+  }
+
   const [tr, dict] = await Promise.allSettled([
     needTranslation ? translate(w.en) : Promise.resolve(null),
     lookupDictionary(w.en),
@@ -256,6 +379,7 @@ async function enrichWord(w, needTranslation = true) {
   if (tr.status === 'fulfilled' && tr.value) {
     w.ru = tr.value.main;
     w.alts = tr.value.alts;
+    w.notFound = false;
   } else if (needTranslation && !w.ru) {
     toast('Не удалось получить перевод — проверь интернет или впиши вручную (✎)');
   }
@@ -298,13 +422,14 @@ function altsText(w) {
 
 function renderWords() {
   const list = $('#word-list');
-  const q = $('#search').value.trim().toLowerCase();
+  const plainRu = s => (s || '').toLowerCase().replace(/́/g, '');   // без знаков ударения
+  const q = plainRu($('#search').value.trim());
   const filter = $('#filter').value;
 
   const items = state.words.filter(w => {
     if (filter === 'learned' && !isLearned(w)) return false;
     if (filter === 'learning' && isLearned(w)) return false;
-    if (q && !w.en.toLowerCase().includes(q) && !(w.ru || '').toLowerCase().includes(q)) return false;
+    if (q && !w.en.toLowerCase().includes(q) && !plainRu(w.ru).includes(q)) return false;
     return true;
   });
 
@@ -323,9 +448,11 @@ function renderWords() {
 
   list.innerHTML = items.map(w => {
     const phon = w.phon
-      ? `<span class="word-phon">${esc(w.phon)} · ≈ [${esc(ipaToCyr(w.phon))}]</span>` : '';
-    const ru = w.pending && !w.ru
-      ? '<span class="loading">перевожу…</span>' : esc(w.ru || '— нет перевода —');
+      ? `<span class="word-phon">${esc(w.phon)} · ≈ [${esc(pronCyr(w))}]</span>` : '';
+    const ru = w.pending && !w.ru ? '<span class="loading">перевожу…</span>'
+      : w.ru ? esc(w.ru)
+      : w.notFound ? '<span class="loading">нет во встроенном словаре — переведу, когда появится интернет (или впиши сам ✎)</span>'
+      : '— нет перевода —';
     const alts = altsText(w);
     const learnedBanner = isLearned(w) ? `
       <div class="learned-banner">
@@ -335,7 +462,7 @@ function renderWords() {
     return `
       <li class="word ${isLearned(w) ? 'learned' : ''}">
         <div class="word-top">
-          <span class="word-en">${esc(w.en)}</span>${phon}
+          <span class="word-en">${esc(w.en)}</span>${w.pos ? `<span class="word-pos">${esc(w.pos)}</span>` : ''}${phon}
         </div>
         <div class="word-ru">${ru}</div>
         ${alts ? `<div class="word-alts">${esc(alts)}</div>` : ''}
@@ -379,10 +506,15 @@ async function showExamples(id) {
   if (!w) return;
   openModal(w.en, '<p class="loading">Ищу примеры…</p>');
 
-  // примеры кэшируются в слове; если их ещё нет — запрашиваем словарь
+  // примеры кэшируются в слове; если их ещё нет — встроенный словарь, потом онлайн
   if (!w.examples || !w.examples.length) {
-    const dict = await lookupDictionary(w.en);
-    if (dict) {
+    try { await loadDict(); } catch (e) { /* без словаря — только онлайн */ }
+    const local = localLookup(w.en);
+    const dict = local && local.examples.length ? null : await lookupDictionary(w.en);
+    if (local && local.examples.length) {
+      w.examples = local.examples;
+      saveState();
+    } else if (dict) {
       w.examples = dict.examples.filter(e => e.en).slice(0, 8);
       w.defs = dict.examples.filter(e => !e.en).slice(0, 3);
       if (!w.phon) { w.phon = dict.phon; w.audio = dict.audio; }
@@ -442,7 +574,7 @@ async function showExamples(id) {
       } catch {
         trBtn.disabled = false;
         trBtn.textContent = 'Перевести';
-        toast('Не удалось перевести');
+        toast(navigator.onLine ? 'Не удалось перевести' : 'Для перевода примера нужен интернет');
       }
     }
   };
@@ -700,7 +832,7 @@ function renderQuestion() {
         <div class="q-hint">Вспомни перевод и нажми на карточку</div>
         <div class="q-word">${esc(w.en)}</div>
         <div id="back" style="display:none">
-          ${w.phon ? `<div class="q-sub">${esc(w.phon)} · ≈ [${esc(ipaToCyr(w.phon))}]</div>` : ''}
+          ${w.phon ? `<div class="q-sub">${esc(w.phon)} · ≈ [${esc(pronCyr(w))}]</div>` : ''}
           <div style="font-size:22px;margin-top:12px">${esc(w.ru)}</div>
           ${altsText(w) ? `<div class="q-sub small">${esc(altsText(w))}</div>` : ''}
         </div>
@@ -949,7 +1081,9 @@ function renderStats() {
       </div>
       <input type="file" id="import-file" accept="application/json,.json" hidden>
       <button class="btn danger block" id="reset-stats" style="margin-top:8px">Сбросить статистику</button>
-    </div>`;
+    </div>
+
+    <p class="small muted">Встроенный словарь: переводы — <a href="https://en.openrussian.org" target="_blank" rel="noopener">OpenRussian</a> (CC BY-SA 4.0), транскрипции — CMU Pronouncing Dictionary, примеры — WordNet 3.0 (Princeton University).</p>`;
 
   $('#export').onclick = exportData;
   $('#import').onclick = () => $('#import-file').click();
@@ -1001,8 +1135,22 @@ function importData(e) {
 
 /* ============================== Старт ============================== */
 
-// Слова, которые остались «в процессе» (например, закрыли вкладку во время запроса) — догрузим
-state.words.filter(w => w.pending).forEach(w => enrichWord(w, !w.ru));
+// Слова, добавленные без интернета и не найденные в словаре, или оставшиеся «в процессе»
+// (закрыли вкладку во время запроса) — догружаем, когда есть сеть
+function retryPending() {
+  state.words.filter(w => w.pending || (w.notFound && !w.ru && navigator.onLine))
+    .forEach(w => enrichWord(w, !w.ru));
+}
+window.addEventListener('online', retryPending);
+
+loadDict().then(d => {
+  $('#dict-note').textContent =
+    `Встроенный словарь: ${Object.keys(d.ru).length.toLocaleString('ru')} слов — работает и без интернета.`;
+}).catch(() => {
+  $('#dict-note').textContent = 'Словарь не загрузился — перевод возьму из интернета или впиши сам.';
+});
+
+retryPending();
 renderWords();
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
