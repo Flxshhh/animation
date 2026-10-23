@@ -239,7 +239,7 @@ a { color: var(--primary-ink); font-weight: 600; }
 /* ---------------- Нижнее меню ---------------- */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-  display: grid; grid-template-columns: repeat(3, 1fr);
+  display: grid; grid-template-columns: repeat(4, 1fr);
   background: var(--card);
   border-top: 1px solid var(--line);
   padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
@@ -392,6 +392,124 @@ a { color: var(--primary-ink); font-weight: 600; }
   transition: opacity 400ms ease, transform 400ms ease, visibility 0s linear 400ms;
 }
 
+/* ---------------- Общение ---------------- */
+body.chat-mode { padding-bottom: calc(160px + env(safe-area-inset-bottom)); }
+
+.chat-thread { display: grid; gap: 16px; padding-bottom: 8px; }
+.chat-empty { text-align: center; padding: 32px 16px; }
+.chat-empty p { margin: 0 0 8px; }
+
+.msg { display: grid; gap: 8px; justify-items: start; animation: rise 300ms var(--ease-out) backwards; }
+.msg.user { justify-items: end; }
+.bubble {
+  max-width: min(88%, 520px);
+  background: var(--card); border-radius: var(--r-lg);
+  padding: 12px 16px; overflow-wrap: anywhere;
+}
+.bubble.mine { background: var(--primary-ink); color: var(--bg); border-bottom-right-radius: 6px; font-weight: 600; }
+.msg.user .bubble.fb { justify-self: start; border-bottom-left-radius: 6px; }
+.fix { margin: 0; font-size: 17px; line-height: 1.55; }
+.fix s, .why s { color: var(--bad); text-decoration-thickness: 2px; }
+.fix b, .why b { color: var(--ok); }
+.fine { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; color: var(--ok); font-weight: 700; }
+.fine .i { width: 18px; height: 18px; }
+.why { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; animation: rise 200ms var(--ease-out); }
+.why li { border-top: 1px solid var(--line); padding-top: 8px; }
+.why span { display: block; color: var(--muted); font-size: 14px; margin-top: 2px; }
+.score { display: flex; gap: 12px; align-items: baseline; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); animation: rise 200ms var(--ease-out); }
+.score b { font-size: 22px; font-weight: 800; color: var(--primary-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.score span { color: var(--muted); font-size: 14px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.bubble .chips { margin-top: 12px; }
+.chip {
+  min-height: 40px; padding: 8px 14px; border: 0; border-radius: 99px;
+  background: var(--primary-soft); color: var(--primary-ink); font-size: 14px; font-weight: 700;
+  transition: transform var(--press) var(--ease-out), opacity var(--dur) ease;
+}
+.chip:active:not(:disabled) { transform: scale(0.97); }
+.chip:disabled { opacity: .55; cursor: default; }
+
+/* Голосовое: кнопка и «волна» */
+.voice, .voice-mine { display: flex; align-items: center; gap: 12px; padding: 8px 16px 8px 8px; min-width: 200px; }
+.voice-mine { padding-left: 12px; }
+.voice-mine > .i { opacity: .8; }
+.voice .play, .voice-mine .play {
+  width: 44px; height: 44px; flex: none; border: 0; border-radius: 50%;
+  display: grid; place-items: center; background: var(--accent); color: var(--on-accent);
+  transition: transform var(--press) var(--ease-out);
+}
+.voice-mine .play { background: var(--bg); color: var(--primary-ink); }
+.play:active { transform: scale(0.94); }
+.play .i { width: 18px; height: 18px; fill: currentColor; }
+.bars { display: flex; align-items: center; gap: 3px; height: 28px; flex: 1; }
+.bars i { width: 3px; border-radius: 2px; background: currentColor; opacity: .45; height: 40%; transform-origin: center; }
+.bars i:nth-child(3n+1) { height: 70%; }
+.bars i:nth-child(4n+2) { height: 100%; }
+.bars i:nth-child(5n+3) { height: 55%; }
+.bars i:nth-child(7n) { height: 25%; }
+.voice .bars i { color: var(--primary); opacity: .6; }
+.voice.playing .bars i { opacity: 1; animation: wave 900ms ease-in-out infinite alternate; }
+.voice.playing .bars i:nth-child(2n) { animation-delay: -300ms; }
+.voice.playing .bars i:nth-child(3n) { animation-delay: -600ms; }
+@keyframes wave { from { transform: scaleY(.35); } to { transform: scaleY(1); } }
+.len { font-size: 13px; font-variant-numeric: tabular-nums; opacity: .85; }
+
+/* Текст ответа: каждое слово можно нажать */
+.reply-text { max-width: min(88%, 520px); background: var(--card); border-radius: var(--r-lg); padding: 14px 16px;
+  font-size: 19px; line-height: 1.6; font-weight: 600; animation: rise 200ms var(--ease-out); }
+.tw { border-radius: 6px; padding: 0 1px; transition: background-color var(--dur) ease; }
+.tw:active { background: var(--primary-soft); }
+.tw.saved { color: var(--primary-ink); text-decoration: underline 2px; text-underline-offset: 4px; }
+.reply-text.gloss .tw { display: inline-flex; flex-direction: column; align-items: center; vertical-align: top; }
+.tw small { font-size: 11px; line-height: 1.2; font-weight: 600; color: var(--muted); max-width: 8em; text-align: center; text-decoration: none; }
+.reply-ru { max-width: min(88%, 520px); margin: 0; color: var(--muted); padding: 0 4px; animation: rise 200ms var(--ease-out); }
+
+.help { max-width: min(88%, 520px); background: var(--card); border-radius: var(--r-lg); padding: 12px 16px; display: grid; gap: 10px; animation: rise 200ms var(--ease-out); }
+.help .ans b { display: block; }
+.help .ans span { color: var(--muted); font-size: 14px; }
+.help .tip { margin: 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 14px; }
+
+.thinking { color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.dots3 { display: inline-flex; gap: 4px; }
+.dots3 i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: blink 1.2s infinite both; }
+.dots3 i:nth-child(2) { animation-delay: .2s; }
+.dots3 i:nth-child(3) { animation-delay: .4s; }
+@keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+
+/* Панель записи над нижним меню */
+.composer {
+  position: fixed; left: 0; right: 0; z-index: 9;
+  bottom: calc(60px + env(safe-area-inset-bottom));
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  max-width: 640px; margin: 0 auto; min-height: 88px;
+  padding: 12px max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left));
+  background: var(--bg);
+}
+.composer[hidden], body:not(.chat-mode) .composer { display: none; }
+.mic {
+  width: 64px; height: 64px; flex: none; border: 0; border-radius: 50%;
+  display: grid; place-items: center; background: var(--accent); color: var(--on-accent);
+  transition: transform var(--press) var(--ease-out);
+}
+.mic .i { width: 28px; height: 28px; }
+.mic:active { transform: scale(0.94); }
+.mic.on { animation: pulse 1.6s ease-out infinite; }
+.mic.small { width: 48px; height: 48px; }
+.mic.small .i { width: 22px; height: 22px; }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  100% { box-shadow: 0 0 0 18px transparent; }
+}
+.rec { flex: 1; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 700; font-variant-numeric: tabular-nums; }
+.composer[data-mode=thinking] .rec { justify-content: center; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); animation: blink 1.2s infinite; }
+.type-form { flex: 1; display: flex; gap: 8px; align-items: center; }
+
+.setup h2 { margin: 0 0 8px; font-size: 20px; font-weight: 800; }
+.setup ol { padding-left: 20px; margin: 8px 0 16px; display: grid; gap: 6px; }
+.setup p { margin: 8px 0; }
+
 /* ---------------- Появление ---------------- */
 @keyframes rise  { from { opacity: 0; transform: translateY(6px); } }
 @keyframes enter { from { opacity: 0; transform: translateY(-8px); } }   /* новое слово «выпадает» из поля ввода */
@@ -420,4 +538,7 @@ a { color: var(--primary-ink); font-weight: 600; }
   .modal.hidden .modal-box { opacity: 0; }
   .toast, .toast.hidden { transform: translate(-50%, 0); }
   .progress div { transition: none; }
+  .msg, .why, .score, .reply-text, .reply-ru, .help { animation-name: fade; }
+  .voice.playing .bars i, .mic.on { animation: none; }
+  .chip:active, .play:active, .mic:active { transform: none; }
 }

@@ -728,7 +728,7 @@ $('#word-list').addEventListener('click', e => {
 
 /* ---------------------------- Вкладки ------------------------------ */
 
-const TITLES = { words: 'Мои слова', train: 'Тренажёр', stats: 'Статистика' };
+const TITLES = { words: 'Мои слова', chat: 'Общение', train: 'Тренажёр', stats: 'Статистика' };
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
@@ -737,10 +737,12 @@ function switchTab(name) {
     if (b.dataset.tab === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   $('#title').textContent = TITLES[name];
+  document.body.classList.toggle('chat-mode', name === 'chat');
   if (name === 'words') renderWords();
+  if (name === 'chat') showChat();         // chat.js
   if (name === 'train' && !session) renderTrainHome();
   if (name === 'stats') renderStats();
-  window.scrollTo(0, 0);
+  if (name !== 'chat') window.scrollTo(0, 0);
 }
 
 document.querySelectorAll('.tabbar button').forEach(b =>
