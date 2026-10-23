@@ -16,7 +16,8 @@ const CHAT_KEY = 'wordbook.chat';    // { msgs: [...] }
 const GEMINI = 'https://generativelanguage.googleapis.com/v1beta';
 const HISTORY_TURNS = 20;            // сколько последних реплик видит собеседник
 const MAX_RECORD_SEC = 60;
-const TIMEOUT_MS = 25000;            // дольше Google не ждём — пробуем другую модель
+const TIMEOUT_MS = 45000;            // дольше одну модель не ждём совсем
+const HEDGE_MS = 8000;               // молчит дольше — параллельно спрашиваем следующую модель
 const COOLDOWN_MS = 10 * 60 * 1000;  // модель, которая не ответила, 10 минут пробуем последней
 
 const CHAT_ICON = {
@@ -40,17 +41,19 @@ function saveJSON(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { console.warn('save', e); }
 }
 
-const ai = loadJSON(AI_KEY, { key: '', model: '', rate: 0.95, v: 0 });
+const ai = loadJSON(AI_KEY, { key: '', model: '', rate: 1, voice: 'Aoede', v: 0 });
 // раньше модель запоминалась сама после первого ответа; теперь пустая модель = «выбирать автоматически»
 if (ai.v < 2) { ai.model = ''; ai.v = 2; }
 // скорость и сбои моделей: { [модель]: { ms, failAt } } — чтобы сначала идти к быстрым и живым
 const health = loadJSON('wordbook.ai-health', {});
-const chat = loadJSON(CHAT_KEY, { msgs: [] });
+const chat = loadJSON(CHAT_KEY, { msgs: [], memory: '' });
+const MEMORY_MAX = 1200;             // краткая выжимка о тебе и прошлых разговорах, символов
 const saveAi = () => saveJSON(AI_KEY, ai);
 saveAi();
 // ссылки на записи голоса живут только до перезагрузки — в хранилище их не кладём
 const saveChat = () => saveJSON(CHAT_KEY, {
   msgs: chat.msgs.filter(m => !m.failed && (m.kind !== 'user' || m.fb)).slice(-100).map(({ audioUrl, ...m }) => m),
+  memory: chat.memory,
 });
 
 /* ------------------------------ Промпты ----------------------------- */
@@ -75,7 +78,20 @@ For every learner message:
    level — grammar, vocabulary, naturalness — what was good and what to work on.
 7. "words": for EVERY word of your reply, in order: the word exactly as written in the reply, its
    dictionary form ("lemma"; for a phrasal verb or set phrase give the whole phrase, e.g. "welcome back",
-   "pick up") and its Russian translation that fits this context (1–3 words).`;
+   "pick up") and its Russian translation that fits this context (1–3 words).
+8. "memory": your updated long-term memory about the learner, kept between conversations. Start from
+   the memory you were given (if any), add what you learnt from this message and drop what no longer
+   matters. Keep facts the learner shared (name, job, city, plans, hobbies, people in their life), topics
+   you talked about recently, and mistakes they make again and again. Plain English, under 100 words.
+   Refer to the learner by name or as "the learner"; don't guess their gender from the name.
+   Use this memory naturally in conversation — ask how the things they told you about went.`;
+
+/* Память добавляется в инструкцию отдельным блоком: так её видят и ответы, и «Помощь» */
+function systemParts() {
+  const parts = [{ text: SYSTEM_PROMPT }];
+  if (chat.memory) parts.push({ text: 'What you remember about the learner from earlier conversations:\n' + chat.memory });
+  return parts;
+}
 
 const HELP_PROMPT = `The learner doesn't know how to answer your last message. Suggest three different
 short answers they could say (natural spoken English, 1–2 sentences each, from easy to more advanced),
@@ -96,13 +112,14 @@ const TURN_SCHEMA = {
     score_comment: str,
     reply: str,
     reply_ru: str,
+    memory: str,
     words: {
       type: 'ARRAY',
       items: { type: 'OBJECT', properties: { word: str, lemma: str, ru: str }, required: ['word', 'lemma', 'ru'] },
     },
   },
-  required: ['transcript', 'mistakes', 'corrected', 'score', 'score_comment', 'reply', 'reply_ru', 'words'],
-  propertyOrdering: ['transcript', 'mistakes', 'corrected', 'score', 'score_comment', 'reply', 'reply_ru', 'words'],
+  required: ['transcript', 'mistakes', 'corrected', 'score', 'score_comment', 'reply', 'reply_ru', 'words', 'memory'],
+  propertyOrdering: ['transcript', 'mistakes', 'corrected', 'score', 'score_comment', 'reply', 'reply_ru', 'words', 'memory'],
 };
 const HELP_SCHEMA = {
   type: 'OBJECT',
@@ -119,9 +136,10 @@ class AiError extends Error {
   constructor(msg, status) { super(msg); this.status = status; }
 }
 
-async function geminiFetch(path, body) {
+async function geminiFetch(path, body, signal) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  signal?.addEventListener('abort', () => ctrl.abort());
   let r, data;
   try {
     r = await fetch(GEMINI + path, {
@@ -132,6 +150,7 @@ async function geminiFetch(path, body) {
     });
     data = await r.json().catch(() => ({}));
   } catch (e) {
+    if (signal?.aborted) throw new AiError('отменено', 'aborted');   // ответила другая модель
     // обрыв связи или Google не ответил вовремя
     throw ctrl.signal.aborted
       ? new AiError('Google не ответил вовремя', 'timeout')
@@ -149,71 +168,121 @@ async function geminiFetch(path, body) {
   return data;
 }
 
-/* Flash-модели, которые умеют generateContent. Список берём у самого API: названия у Google
- * меняются часто. Lite — быстрее и реже перегружены, поэтому они первыми */
+/* Все модели ключа одним запросом: названия у Google меняются часто, поэтому не зашиваем их в код */
+let allModels = null;
+async function fetchModels() {
+  allModels ??= geminiFetch('/models?pageSize=1000')
+    .then(d => (d.models || [])
+      .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map(m => m.name.replace(/^models\//, '')))
+    .catch(e => { allModels = null; throw e; });
+  return allModels;
+}
+
+const ver = n => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+// Lite — быстрее и реже перегружены, поэтому они первыми
+const rank = n => (/lite/.test(n) ? 0 : 1) + (/preview|exp/.test(n) ? 0.5 : 0);
+const byRank = (a, b) => rank(a) - rank(b) || ver(b) - ver(a) || a.localeCompare(b);
+
+/* Flash-модели для разговора */
 async function listModels() {
-  const d = await geminiFetch('/models?pageSize=1000');
-  const ver = n => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
-  const rank = n => (/lite/.test(n) ? 0 : 1) + (/preview|exp/.test(n) ? 0.5 : 0);
-  return (d.models || [])
-    .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
-    .map(m => m.name.replace(/^models\//, ''))
+  return (await fetchModels())
     .filter(n => /^gemini-.*flash/.test(n) && !/tts|image|live|embed|audio|omni|transcribe|computer|robotics/.test(n))
-    .sort((a, b) => rank(a) - rank(b) || ver(b) - ver(a) || a.localeCompare(b));
+    .sort(byRank);
+}
+
+/* Модели, которые озвучивают текст */
+async function listTtsModels() {
+  return (await fetchModels()).filter(n => /^gemini-.*tts/.test(n) && !/pro/.test(n)).sort(byRank);
+}
+
+/* Порядок попыток: ожидаемое время ответа — измеренное, иначе условное по порядку списка;
+ * модели, которые недавно не ответили, — в конец */
+function byHealth(models) {
+  const now = Date.now();
+  models = models.filter(m => !health[m]?.gone);
+  const cost = (m, i) => (now - (health[m]?.failAt || 0) < COOLDOWN_MS ? 1e9 : 0)
+    + (health[m]?.ms ?? 12000 + i * 500);
+  return models.map((m, i) => [m, cost(m, i)]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
 }
 
 let modelsCache = null;
 async function modelChain() {
   modelsCache ??= await listModels();
-  const now = Date.now();
-  // ожидаемое время ответа: измеренное, иначе условное по порядку списка; недавно упавшие — в конец
-  const cost = (m, i) => (now - (health[m]?.failAt || 0) < COOLDOWN_MS ? 1e9 : 0)
-    + (health[m]?.ms ?? 12000 + i * 500);
-  const auto = modelsCache.map((m, i) => [m, cost(m, i)]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
+  const auto = byHealth(modelsCache);
   // модель, выбранная вручную в настройках, — первой
   return ai.model ? [ai.model, ...auto.filter(m => m !== ai.model)] : auto;
 }
 
-function noteHealth(model, ms) {
+function noteHealth(model, ms, err) {
   const h = health[model] ||= {};
-  if (ms == null) h.failAt = Date.now();
+  if (err?.status === 404) h.gone = true;          // Google отключил модель — больше не пробуем
+  else if (ms == null) h.failAt = Date.now();
   else { h.ms = h.ms ? Math.round(h.ms * 0.6 + ms * 0.4) : ms; h.failAt = 0; }
   saveJSON('wordbook.ai-health', health);
 }
 
+/*
+ * Запрос к нескольким моделям «наперегонки». Google на бесплатном ключе отвечает то за 3 с, то за 50,
+ * поэтому: спрашиваем первую модель; если она молчит дольше HEDGE_MS или упала — спрашиваем следующую,
+ * не отменяя первую. Берём первый успешный ответ, остальные запросы отменяем.
+ */
+function raceModels(models, run, onSlow = () => {}) {
+  return new Promise((resolve, reject) => {
+    const started = new Map();   // модель → { ctrl, t0 }
+    let next = 0, done = false, lastErr = null, hedge;
+    const finish = () => { done = true; clearTimeout(hedge); started.forEach(a => a.ctrl.abort()); };
+    const launch = () => {
+      if (done) return;
+      if (next >= models.length) {
+        if (!started.size) { done = true; reject(lastErr || new AiError('Нет доступных моделей')); }
+        return;
+      }
+      const model = models[next++];
+      const attempt = { ctrl: new AbortController(), t0: Date.now() };
+      started.set(model, attempt);
+      clearTimeout(hedge);
+      hedge = setTimeout(() => { if (!done && next < models.length) { onSlow(); launch(); } }, HEDGE_MS);
+      run(model, attempt.ctrl.signal).then(out => {
+        if (done) return;
+        started.delete(model);
+        noteHealth(model, Date.now() - attempt.t0);
+        // проигравшие были как минимум настолько медленными — запомним, чтобы реже ставить их первыми
+        started.forEach((a, m) => { const h = health[m] ||= {}; h.ms = Math.max(h.ms || 0, Date.now() - a.t0); });
+        finish();
+        resolve(out);
+      }, e => {
+        if (done) return;
+        started.delete(model);
+        lastErr = e;
+        // ключ неверный или запрос плохой — другая модель не поможет
+        if (!RETRYABLE.has(e.status)) { finish(); reject(e); return; }
+        noteHealth(model, null, e);
+        launch();
+      });
+    };
+    launch();
+  });
+}
+
 /* Временные сбои: лимит, перегрузка у Google, пропавшая модель, таймаут, обрыв связи.
  * На них пробуем ещё раз — уже на следующей модели из списка */
-const RETRYABLE = new Set([429, 404, 500, 502, 503, 504, 'timeout', 'network']);
+const RETRYABLE = new Set([429, 404, 500, 502, 503, 504, 'timeout', 'network', 'empty']);
 
 async function generate(contents, schema, onRetry = () => {}) {
   const body = {
-    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    systemInstruction: { parts: systemParts() },
     contents,
     generationConfig: { responseMimeType: 'application/json', responseSchema: schema },
   };
-  let lastErr;
-  const chain = (await modelChain()).slice(0, 3);
-  for (const [n, model] of chain.entries()) {
-    if (n) onRetry(lastErr);
-    const t0 = Date.now();
-    try {
-      const d = await geminiFetch(`/models/${model}:generateContent`, body);
-      const cand = d.candidates?.[0];
-      const text = (cand?.content?.parts || []).filter(p => p.text && !p.thought).map(p => p.text).join('');
-      if (!text) throw new AiError(d.promptFeedback?.blockReason || cand?.finishReason || 'пустой ответ');
-      const out = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ''));
-      noteHealth(model, Date.now() - t0);
-      return out;
-    } catch (e) {
-      lastErr = e;
-      if (RETRYABLE.has(e.status)) noteHealth(model, null);
-      // ключ неверный или запрос плохой — другая модель не поможет
-      if (!RETRYABLE.has(e.status)) throw e;
-      // связь моргнула — небольшая пауза перед следующей попыткой
-      if (e.status === 'network') await new Promise(res => setTimeout(res, 1500));
-    }
-  }
-  throw lastErr || new AiError('Нет доступных моделей');
+  return raceModels((await modelChain()).slice(0, 3), async (model, signal) => {
+    const d = await geminiFetch(`/models/${model}:generateContent`, body, signal);
+    const cand = d.candidates?.[0];
+    const text = (cand?.content?.parts || []).filter(p => p.text && !p.thought).map(p => p.text).join('');
+    if (!text) throw new AiError(d.promptFeedback?.blockReason || cand?.finishReason || 'пустой ответ', 'empty');
+    try { return JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')); }
+    catch { throw new AiError('ответ оборвался', 'empty'); }   // недописанный JSON — пусть ответит другая модель
+  }, onRetry);
 }
 
 /* История для собеседника: только тексты, без записей голоса */
@@ -242,19 +311,23 @@ async function toWav16k(blob) {
   src.connect(off.destination);
   src.start();
   const pcm = (await off.startRendering()).getChannelData(0);
-
-  const buf = new ArrayBuffer(44 + pcm.length * 2);
-  const v = new DataView(buf);
-  const str4 = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-  str4(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); str4(8, 'WAVE');
-  str4(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  str4(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  const pcm16 = new Int16Array(pcm.length);
   for (let i = 0; i < pcm.length; i++) {
     const s = Math.max(-1, Math.min(1, pcm[i]));
-    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
   }
-  return { wav: new Blob([buf], { type: 'audio/wav' }), seconds: decoded.duration };
+  return { wav: wavBlob(new Uint8Array(pcm16.buffer), rate), seconds: decoded.duration };
+}
+
+/* 16-битный PCM моно (little-endian) → WAV-файл */
+function wavBlob(bytes, rate) {
+  const head = new DataView(new ArrayBuffer(44));
+  const str4 = (o, s) => [...s].forEach((c, i) => head.setUint8(o + i, c.charCodeAt(0)));
+  str4(0, 'RIFF'); head.setUint32(4, 36 + bytes.length, true); str4(8, 'WAVE');
+  str4(12, 'fmt '); head.setUint32(16, 16, true); head.setUint16(20, 1, true); head.setUint16(22, 1, true);
+  head.setUint32(24, rate, true); head.setUint32(28, rate * 2, true); head.setUint16(32, 2, true); head.setUint16(34, 16, true);
+  str4(36, 'data'); head.setUint32(40, bytes.length, true);
+  return new Blob([head.buffer, bytes], { type: 'audio/wav' });
 }
 
 function blobToBase64(blob) {
@@ -318,37 +391,113 @@ async function onRecorded() {
 
 /* ------------------------------ Озвучка ----------------------------- */
 
-/* iOS разрешает озвучку только после касания: «пустая» фраза в момент нажатия снимает запрет */
+/* Голоса Google (озвучивает Gemini, ~3 с на реплику) и запасной — голос телефона */
+const VOICES = {
+  Aoede: 'Аоэда — женский, мягкий',
+  Kore: 'Кора — женский, уверенный',
+  Leda: 'Леда — женский, молодой',
+  Puck: 'Пак — мужской, бодрый',
+  Charon: 'Харон — мужской, спокойный',
+  Fenrir: 'Фенрир — мужской, энергичный',
+  device: 'Голос телефона (без интернета)',
+};
+
+const player = new Audio();
+const voiceCache = new Map();   // id реплики → ссылка на её озвучку (до перезагрузки страницы)
+
+/* iOS разрешает звук только после касания: в момент нажатия «разблокируем» и плеер, и голос телефона */
 let speechUnlocked = false;
 function unlockSpeech() {
-  if (speechUnlocked || !('speechSynthesis' in window)) return;
-  const u = new SpeechSynthesisUtterance(' ');
-  u.volume = 0;
-  speechSynthesis.speak(u);
+  if (speechUnlocked) return;
   speechUnlocked = true;
+  player.src = URL.createObjectURL(wavBlob(new Uint8Array(480), 24000));   // 10 мс тишины
+  player.play().catch(() => {});
+  if ('speechSynthesis' in window) {
+    const u = new SpeechSynthesisUtterance(' ');
+    u.volume = 0;
+    speechSynthesis.speak(u);
+  }
+}
+
+/* Текст → голос Google. Ответ приходит как сырой PCM (audio/L16;rate=24000) или сразу WAV */
+async function synth(text, voice) {
+  const body = {
+    contents: [{ parts: [{ text: 'Say in a warm, natural, friendly conversational tone: ' + text }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+    },
+  };
+  return raceModels(byHealth(await listTtsModels()).slice(0, 3), async (model, signal) => {
+    const d = await geminiFetch(`/models/${model}:generateContent`, body, signal);
+    const data = d.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData;
+    if (!data) throw new AiError('пустая озвучка', 'empty');
+    const bytes = Uint8Array.from(atob(data.data), c => c.charCodeAt(0));
+    if (/wav/i.test(data.mimeType)) return new Blob([bytes], { type: 'audio/wav' });
+    const rate = +(data.mimeType.match(/rate=(\d+)/) || [])[1] || 24000;
+    return wavBlob(bytes, rate);
+  });
 }
 
 let speakingId = null;
-function speakReply(msg) {
+let loadingVoice = null;   // id реплики, для которой сейчас готовится озвучка
+
+async function speakReply(msg) {
+  // повторное нажатие — стоп
+  if (speakingId === msg.id || loadingVoice === msg.id) { stopSpeaking(); return; }
+  stopSpeaking();
+  if (ai.voice === 'device') { speakDevice(msg); return; }
+
+  let url = voiceCache.get(msg.id);
+  if (!url) {
+    loadingVoice = msg.id;
+    setSpeaking(null);
+    try {
+      url = URL.createObjectURL(await synth(msg.text, ai.voice));
+      voiceCache.set(msg.id, url);
+    } catch (e) {
+      console.warn('tts', e);
+      loadingVoice = null;
+      toast('Голос Google сейчас недоступен — читаю голосом телефона');
+      speakDevice(msg);
+      return;
+    }
+    if (loadingVoice !== msg.id) return;    // пока готовилось, нажали на другую реплику
+    loadingVoice = null;
+  }
+  player.src = url;
+  player.playbackRate = ai.rate;
+  player.onended = player.onpause = () => { if (speakingId === msg.id) setSpeaking(null); };
+  setSpeaking(msg.id);
+  player.play().catch(() => { setSpeaking(null); toast('Нажми ▶, чтобы послушать'); });
+}
+
+function speakDevice(msg) {
   if (!('speechSynthesis' in window)) { toast('Озвучка не поддерживается браузером'); return; }
-  speechSynthesis.cancel();
-  if (speakingId === msg.id) { setSpeaking(null); return; }   // повторное нажатие — стоп
   const u = new SpeechSynthesisUtterance(msg.text);
   u.lang = 'en-US';
   if (enVoice) u.voice = enVoice;
-  u.rate = ai.rate;
+  u.rate = ai.rate * 0.95;
   u.onend = u.onerror = () => { if (speakingId === msg.id) setSpeaking(null); };
   setSpeaking(msg.id);
   speechSynthesis.speak(u);
 }
 
+function stopSpeaking() {
+  loadingVoice = null;
+  player.pause();
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  setSpeaking(null);
+}
+
 function setSpeaking(id) {
   speakingId = id;
   document.querySelectorAll('.voice').forEach(el => {
-    const on = el.dataset.id === id;
+    const on = el.dataset.id === id, wait = el.dataset.id === loadingVoice;
     el.classList.toggle('playing', on);
-    el.querySelector('.play').innerHTML = on ? CHAT_ICON.stop : CHAT_ICON.play;
-    el.querySelector('.play').setAttribute('aria-label', on ? 'Остановить' : 'Прослушать');
+    el.classList.toggle('loading', wait);
+    el.querySelector('.play').innerHTML = wait ? '<span class="spin"></span>' : on ? CHAT_ICON.stop : CHAT_ICON.play;
+    el.querySelector('.play').setAttribute('aria-label', wait ? 'Готовлю голос' : on ? 'Остановить' : 'Прослушать');
   });
 }
 
@@ -416,7 +565,7 @@ async function sendTurn(payload) {
       ? [{ inlineData: { mimeType: 'audio/wav', data: await blobToBase64(audio) } }]
       : [{ text }];
     const t = await generate([...historyContents(), { role: 'user', parts }], TURN_SCHEMA,
-      () => setThinkingNote('Google перегружен — пробую другую модель…'));
+      () => setThinkingNote('Google медлит — спрашиваю ещё одну модель…'));
     const original = audio ? (t.transcript || '').trim() : text;
     user.fb = {
       original,
@@ -425,6 +574,7 @@ async function sendTurn(payload) {
       score: t.score, comment: t.score_comment, shown: '',
     };
     const bot = { id: uid(), kind: 'bot', text: t.reply, ru: t.reply_ru, view: '', gloss: alignGloss(t.reply, t.words) };
+    if (typeof t.memory === 'string' && t.memory.trim()) chat.memory = t.memory.trim().slice(0, MEMORY_MAX);
     chat.msgs.push(bot);
     saveChat();
     renderChat();
@@ -556,8 +706,9 @@ function msgHTML(m) {
       `<div class="ans"><b>${i + 1}. ${esc(a.en)}</b><span>${esc(a.ru)}</span></div>`).join('')}
       <p class="tip">🧩 ${esc(m.help.tip)}</p></div>` : '';
   return `<div class="msg bot" data-id="${m.id}">
-    <div class="bubble voice${speakingId === m.id ? ' playing' : ''}" data-id="${m.id}">
-      <button class="play" data-act="play" aria-label="Прослушать">${speakingId === m.id ? CHAT_ICON.stop : CHAT_ICON.play}</button>
+    <div class="bubble voice${speakingId === m.id ? ' playing' : ''}${loadingVoice === m.id ? ' loading' : ''}" data-id="${m.id}">
+      <button class="play" data-act="play" aria-label="Прослушать">${loadingVoice === m.id ? '<span class="spin"></span>'
+        : speakingId === m.id ? CHAT_ICON.stop : CHAT_ICON.play}</button>
       <span class="bars" aria-hidden="true">${'<i></i>'.repeat(18)}</span>
     </div>
     ${text}${help}
@@ -683,17 +834,42 @@ async function openAiSettings() {
       <input id="ai-key2" type="text" value="${esc(ai.key)}" autocapitalize="none" spellcheck="false">
       <label for="ai-model">Модель</label>
       <select id="ai-model"><option value="">Автоматически (рекомендую)</option></select>
+      <label for="ai-voice">Голос собеседника</label>
+      <div class="voice-pick">
+        <select id="ai-voice">${Object.entries(VOICES).map(([k, v]) =>
+          `<option value="${k}" ${k === ai.voice ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
+        <button class="btn" type="button" id="voice-try">${CHAT_ICON.play}Послушать</button>
+      </div>
       <label for="ai-rate">Скорость речи: <span id="rate-val">${ai.rate}</span></label>
       <input id="ai-rate" type="range" min="0.6" max="1.2" step="0.05" value="${ai.rate}">
+      <label for="ai-memory">Что собеседник помнит о тебе</label>
+      <textarea id="ai-memory" rows="5" placeholder="Пока ничего — расскажи о себе в разговоре">${esc(chat.memory)}</textarea>
       <button class="btn primary" type="submit">Сохранить</button>
-      <button class="btn danger" type="button" id="chat-clear">Начать разговор заново</button>
+      <button class="btn" type="button" id="chat-clear">Начать разговор заново</button>
+      <button class="btn danger" type="button" id="chat-forget">Забыть всё обо мне</button>
     </form>
     <p class="muted small">«Автоматически» — сначала самая быстрая модель, которая сейчас отвечает; если Google
       перегружен или кончился лимит, я сам попробую другую. Lite — быстрее, обычный Flash — точнее, но чаще перегружен.</p>`);
   $('#ai-rate').oninput = e => { $('#rate-val').textContent = e.target.value; };
+  $('#voice-try').onclick = () => {
+    unlockSpeech();
+    const voice = $('#ai-voice').value;
+    const sample = { id: 'sample-' + voice, text: "Hi! I'm your English buddy. What would you like to talk about today?" };
+    const was = ai.voice;
+    ai.voice = voice;              // пробуем выбранный голос, не сохраняя его
+    speakReply(sample).finally(() => { ai.voice = was; });
+  };
   $('#chat-clear').onclick = () => {
-    if (!confirm('Удалить весь разговор?')) return;
+    if (!confirm('Начать новый разговор? Сообщения удалятся, но собеседник запомнит главное о тебе.')) return;
     chat.msgs = [];
+    saveChat();
+    closeModal();
+    renderChat();
+  };
+  $('#chat-forget').onclick = () => {
+    if (!confirm('Удалить разговор и всё, что собеседник помнит о тебе?')) return;
+    chat.msgs = [];
+    chat.memory = '';
     saveChat();
     closeModal();
     renderChat();
@@ -701,10 +877,14 @@ async function openAiSettings() {
   $('#ai-form').onsubmit = e => {
     e.preventDefault();
     const key = $('#ai-key2').value.trim();
-    if (key !== ai.key) { ai.key = key; modelsCache = null; }
+    if (key !== ai.key) { ai.key = key; modelsCache = null; allModels = null; }
     ai.model = $('#ai-model').value;
     ai.rate = parseFloat($('#ai-rate').value);
+    if ($('#ai-voice').value !== ai.voice) voiceCache.clear();
+    ai.voice = $('#ai-voice').value;
+    chat.memory = $('#ai-memory').value.trim().slice(0, MEMORY_MAX);
     saveAi();
+    saveChat();
     closeModal();
     renderChat();
     setComposer('idle');
@@ -768,6 +948,7 @@ $('#chat-root').addEventListener('submit', e => {
   e.preventDefault();
   ai.key = $('#ai-key').value.trim();
   modelsCache = null;
+  allModels = null;
   saveAi();
   renderChat();
   setComposer('idle');

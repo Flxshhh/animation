@@ -471,6 +471,13 @@ body.chat-mode { padding-bottom: calc(160px + env(safe-area-inset-bottom)); }
 .help .tip { margin: 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 14px; }
 
 .thinking { color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.voice.loading .play { background: var(--muted-bg); }
+.spin { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--primary); border-right-color: transparent; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.voice-pick { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+textarea { width: 100%; padding: 12px 14px; border: 1.5px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: inherit; font: inherit; font-size: 15px; resize: vertical; outline: none; }
+textarea:focus { border-color: var(--primary); }
 .failed p { margin: 0; color: var(--bad); font-weight: 600; }
 .chip.ghost { background: transparent; color: var(--muted); }
 .dots3 { display: inline-flex; gap: 4px; }
@@ -542,5 +549,6 @@ body.chat-mode { padding-bottom: calc(160px + env(safe-area-inset-bottom)); }
   .progress div { transition: none; }
   .msg, .why, .score, .reply-text, .reply-ru, .help { animation-name: fade; }
   .voice.playing .bars i, .mic.on { animation: none; }
+  .spin { animation-duration: 2s; }
   .chip:active, .play:active, .mic:active { transform: none; }
 }
