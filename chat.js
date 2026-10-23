@@ -459,7 +459,8 @@ function unlockSpeech() {
 /* Текст → голос Google. Ответ приходит как сырой PCM (audio/L16;rate=24000) или сразу WAV */
 async function synth(text, voice) {
   const body = {
-    contents: [{ parts: [{ text: 'Say in a warm, natural, friendly conversational tone: ' + text }] }],
+    // только сам текст: указания про тон некоторые голосовые модели зачитывают вслух
+    contents: [{ parts: [{ text }] }],
     generationConfig: {
       responseModalities: ['AUDIO'],
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
