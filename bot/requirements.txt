@@ -1,0 +1,5 @@
+aiogram>=3.31,<4
+anthropic>=2.2,<3
+edge-tts>=7.3,<8
+faster-whisper>=1.2,<2
+python-dotenv>=1.0
