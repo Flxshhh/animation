@@ -16,6 +16,7 @@ const CHAT_KEY = 'wordbook.chat';    // { msgs: [...] }
 const GEMINI = 'https://generativelanguage.googleapis.com/v1beta';
 const HISTORY_TURNS = 20;            // сколько последних реплик видит собеседник
 const MAX_RECORD_SEC = 60;
+const TIMEOUT_MS = 40000;            // дольше Google не ждём — пробуем ещё раз или другую модель
 
 const CHAT_ICON = {
   mic: svg('<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>'),
@@ -42,7 +43,9 @@ const ai = loadJSON(AI_KEY, { key: '', model: '', rate: 0.95 });
 const chat = loadJSON(CHAT_KEY, { msgs: [] });
 const saveAi = () => saveJSON(AI_KEY, ai);
 // ссылки на записи голоса живут только до перезагрузки — в хранилище их не кладём
-const saveChat = () => saveJSON(CHAT_KEY, { msgs: chat.msgs.slice(-100).map(({ audioUrl, ...m }) => m) });
+const saveChat = () => saveJSON(CHAT_KEY, {
+  msgs: chat.msgs.filter(m => !m.failed && (m.kind !== 'user' || m.fb)).slice(-100).map(({ audioUrl, ...m }) => m),
+});
 
 /* ------------------------------ Промпты ----------------------------- */
 
@@ -111,12 +114,25 @@ class AiError extends Error {
 }
 
 async function geminiFetch(path, body) {
-  const r = await fetch(GEMINI + path, {
-    method: body ? 'POST' : 'GET',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.key },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await r.json().catch(() => ({}));
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  let r, data;
+  try {
+    r = await fetch(GEMINI + path, {
+      method: body ? 'POST' : 'GET',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.key },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+    data = await r.json().catch(() => ({}));
+  } catch (e) {
+    // обрыв связи или Google не ответил вовремя
+    throw ctrl.signal.aborted
+      ? new AiError('Google не ответил вовремя', 'timeout')
+      : new AiError('Нет связи с Google', 'network');
+  } finally {
+    clearTimeout(timer);
+  }
   if (!r.ok) {
     const msg = data.error?.message || 'HTTP ' + r.status;
     if (r.status === 400 && /API key/i.test(msg)) throw new AiError('Ключ не подходит — проверь его в настройках', 401);
@@ -149,6 +165,10 @@ async function modelChain() {
   return ai.model ? [ai.model, ...rest] : rest;
 }
 
+/* Временные сбои: лимит, перегрузка у Google, пропавшая модель, таймаут, обрыв связи.
+ * На них пробуем ещё раз — уже на следующей модели из списка */
+const RETRYABLE = new Set([429, 404, 500, 502, 503, 504, 'timeout', 'network']);
+
 async function generate(contents, schema) {
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -166,7 +186,10 @@ async function generate(contents, schema) {
       return JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ''));
     } catch (e) {
       lastErr = e;
-      if (e.status !== 429 && e.status !== 404) throw e;   // лимит или модель пропала — пробуем следующую
+      // ключ неверный или запрос плохой — другая модель не поможет
+      if (!RETRYABLE.has(e.status)) throw e;
+      // связь моргнула — небольшая пауза перед следующей попыткой
+      if (e.status === 'network') await new Promise(res => setTimeout(res, 1500));
     }
   }
   throw lastErr || new AiError('Нет доступных моделей');
@@ -354,19 +377,23 @@ function diffHTML(original, corrected) {
 
 let busy = false;
 
-async function sendTurn({ text, audio, audioUrl, seconds }) {
+/* Неотправленные реплики: запись держим в памяти, чтобы повторить без перезаписи */
+const pending = new Map();
+
+async function sendTurn(payload) {
+  const { text, audio, audioUrl, seconds } = payload;
   if (busy) return;
   busy = true;
-  const user = { id: uid(), kind: 'user', voice: !!audio, seconds, audioUrl, fb: null };
+  const user = { id: uid(), kind: 'user', voice: !!audio, seconds, audioUrl, text, fb: null };
   chat.msgs.push(user);
   setComposer('thinking');
   renderChat();
 
-  const parts = audio
-    ? [{ inlineData: { mimeType: 'audio/wav', data: await blobToBase64(audio) } },
-       { text: 'This is my voice message.' }]
-    : [{ text }];
   try {
+    const parts = audio
+      ? [{ inlineData: { mimeType: 'audio/wav', data: await blobToBase64(audio) } },
+         { text: 'This is my voice message.' }]
+      : [{ text }];
     const t = await generate([...historyContents(), { role: 'user', parts }], TURN_SCHEMA);
     const original = audio ? (t.transcript || '').trim() : text;
     user.fb = {
@@ -382,9 +409,10 @@ async function sendTurn({ text, audio, audioUrl, seconds }) {
     speakReply(bot);
   } catch (e) {
     console.warn('turn', e);
-    chat.msgs = chat.msgs.filter(m => m !== user);
+    // реплика остаётся в разговоре с кнопкой «Повторить»
+    user.failed = e instanceof AiError ? e.message : 'Нет связи с нейросетью';
+    pending.set(user.id, payload);
     renderChat();
-    toast(e instanceof AiError ? e.message : 'Нет связи с нейросетью — попробуй ещё раз');
     if (e.status === 401) openAiSettings();
   } finally {
     busy = false;
@@ -486,8 +514,11 @@ function msgHTML(m) {
       ? `<div class="bubble mine voice-mine">${m.audioUrl
           ? `<button class="play" data-act="mine" aria-label="Послушать себя">${CHAT_ICON.play}</button>`
           : CHAT_ICON.mic}<span class="bars" aria-hidden="true">${'<i></i>'.repeat(14)}</span><span class="len">${len}</span></div>`
-      : `<div class="bubble mine">${esc(m.fb?.original || '…')}</div>`;
+      : `<div class="bubble mine">${esc(m.fb?.original || m.text || '…')}</div>`;
     const fb = m.fb ? fbHTML(m)
+      : m.failed ? `<div class="bubble fb failed"><p>⚠️ ${esc(m.failed)}</p><div class="chips">
+          <button class="chip" data-act="retry">Повторить</button>
+          <button class="chip ghost" data-act="drop">Удалить</button></div></div>`
       : `<div class="bubble fb thinking"><span class="dots3"><i></i><i></i><i></i></span> Слушаю…</div>`;
     return `<div class="msg user" data-id="${m.id}">${mine}${fb}</div>`;
   }
@@ -542,7 +573,7 @@ function setupHTML() {
     </ol>
     <form id="key-form" class="form-grid" autocomplete="off">
       <label for="ai-key" class="sr-only">Ключ Gemini API</label>
-      <input id="ai-key" type="text" placeholder="AIza…" autocapitalize="none" spellcheck="false" required>
+      <input id="ai-key" type="text" placeholder="Вставь ключ сюда" autocapitalize="none" spellcheck="false" required>
       <button class="btn primary" type="submit">Сохранить</button>
     </form>
     <p class="muted small">Ключ хранится только на этом телефоне. На бесплатном тарифе есть лимит запросов в день,
@@ -686,6 +717,13 @@ $('#chat-root').addEventListener('click', e => {
     renderMsg(m);
   }
   if (act === 'help') askHelp(m);
+  if (act === 'retry' || act === 'drop') {
+    const payload = pending.get(m.id);
+    pending.delete(m.id);
+    chat.msgs = chat.msgs.filter(x => x !== m);
+    renderChat();
+    if (act === 'retry' && payload) sendTurn(payload);
+  }
 });
 
 $('#chat-root').addEventListener('keydown', e => {

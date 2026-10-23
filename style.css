@@ -471,6 +471,8 @@ body.chat-mode { padding-bottom: calc(160px + env(safe-area-inset-bottom)); }
 .help .tip { margin: 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 14px; }
 
 .thinking { color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.failed p { margin: 0; color: var(--bad); font-weight: 600; }
+.chip.ghost { background: transparent; color: var(--muted); }
 .dots3 { display: inline-flex; gap: 4px; }
 .dots3 i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: blink 1.2s infinite both; }
 .dots3 i:nth-child(2) { animation-delay: .2s; }
