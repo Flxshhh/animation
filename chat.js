@@ -43,13 +43,50 @@ function saveJSON(key, value) {
 
 const ai = loadJSON(AI_KEY, { key: '', model: '', rate: 1, voice: 'Aoede', v: 0 });
 // раньше модель запоминалась сама после первого ответа; теперь пустая модель = «выбирать автоматически»
-if (ai.v < 2) { ai.model = ''; ai.v = 2; }
+const migrate = ai.v < 2;
+if (migrate) { ai.model = ''; ai.v = 2; }
 // скорость и сбои моделей: { [модель]: { ms, failAt } } — чтобы сначала идти к быстрым и живым
 const health = loadJSON('wordbook.ai-health', {});
 const chat = loadJSON(CHAT_KEY, { msgs: [], memory: '' });
 const MEMORY_MAX = 1200;             // краткая выжимка о тебе и прошлых разговорах, символов
-const saveAi = () => saveJSON(AI_KEY, ai);
-saveAi();
+// копию обновляем всегда: если ключ стёрли в настройках, восстанавливать его не нужно
+const saveAi = () => { saveJSON(AI_KEY, ai); backupKey(ai.key); };
+// сохраняем при запуске, только если что-то поменяли: иначе пустые настройки могли бы затереть ключ
+if (migrate && ai.key) saveAi();
+
+/* ---------------------- Запасная копия ключа ------------------------
+ * iOS иногда чистит localStorage сайтов, открытых с главного экрана. Ключ дублируем в IndexedDB
+ * и просим браузер не удалять данные сайта (navigator.storage.persist). */
+function idb(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open('wordbook', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('kv');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction('kv', mode);
+      const req = fn(tx.objectStore('kv'));
+      tx.oncomplete = () => { resolve(req.result); open.result.close(); };
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+}
+
+function backupKey(key) {
+  idb('readwrite', s => s.put(key, 'gemini-key')).catch(e => console.warn('idb', e));
+  if (key) navigator.storage?.persist?.().catch(() => {});
+}
+
+/* Ключа нет в localStorage, но есть в запасной копии — восстанавливаем */
+async function restoreKey() {
+  if (ai.key) return;
+  try {
+    const key = await idb('readonly', s => s.get('gemini-key'));
+    if (!key || ai.key) return;
+    ai.key = key;
+    saveJSON(AI_KEY, ai);
+    if (document.body.classList.contains('chat-mode')) showChat();
+  } catch (e) { console.warn('idb', e); }
+}
 // ссылки на записи голоса живут только до перезагрузки — в хранилище их не кладём
 const saveChat = () => saveJSON(CHAT_KEY, {
   msgs: chat.msgs.filter(m => !m.failed && (m.kind !== 'user' || m.fb)).slice(-100).map(({ audioUrl, ...m }) => m),
@@ -971,6 +1008,8 @@ $('#composer').addEventListener('submit', e => {
   unlockSpeech();
   sendTurn({ text });
 });
+
+restoreKey();
 
 function showChat() {
   renderChat();
