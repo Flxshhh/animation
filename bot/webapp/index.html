@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Текст</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* Цвета берутся из темы Telegram; запасные — тёмная тема, как в оригинале */
+  :root {
+    --bg: var(--tg-theme-bg-color, #000);
+    --card: var(--tg-theme-secondary-bg-color, #1c1c1e);
+    --text: var(--tg-theme-text-color, #fff);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --accent: var(--tg-theme-button-color, #5b5fc7);
+    --accent-text: var(--tg-theme-button-text-color, #fff);
+    --ease-out: cubic-bezier(.23, 1, .32, 1);
+    --ease-drawer: cubic-bezier(.32, .72, 0, 1);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { padding: 12px 16px 50vh; }
+
+  .card { background: var(--card); border-radius: 20px; padding: 18px 18px 14px; }
+  #text { font-size: 24px; line-height: 1.55; font-weight: 500; letter-spacing: -.01em; margin: 0;
+    -webkit-user-select: none; user-select: none; overflow-wrap: anywhere; }
+  .w { cursor: pointer; border-radius: 6px; transition: background-color .15s ease; }
+  .w.on { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .w.saved { text-decoration: underline 2px color-mix(in srgb, var(--accent) 80%, transparent);
+    text-underline-offset: 5px; }
+  /* «по словам»: перевод мелко под каждым словом */
+  .gloss .w { display: inline-flex; flex-direction: column; align-items: center; vertical-align: top; }
+  .w small { display: none; font-size: 12px; line-height: 1.2; color: var(--hint); font-weight: 400;
+    max-width: 9em; text-align: center; }
+  .gloss .w small { display: block; }
+
+  .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+  .icon { width: 36px; height: 36px; border: 0; border-radius: 10px; background: transparent;
+    color: var(--hint); display: grid; place-items: center; cursor: pointer;
+    transition: transform .16s var(--ease-out), background-color .15s ease; }
+  .icon:active { transform: scale(.94); background: color-mix(in srgb, var(--hint) 18%, transparent); }
+  .icon svg { width: 20px; height: 20px; }
+
+  .btn { display: block; width: 100%; margin-top: 12px; padding: 13px; border: 0; border-radius: 14px;
+    font: inherit; font-weight: 600; font-size: 16px; cursor: pointer;
+    background: color-mix(in srgb, var(--accent) 70%, var(--card)); color: var(--accent-text);
+    transition: transform .16s var(--ease-out), opacity .2s ease; }
+  .btn.ghost { background: transparent; color: var(--accent); }
+  .btn:active { transform: scale(.97); }
+  .btn[disabled] { opacity: .6; }
+  #translation { color: var(--hint); margin: 14px 2px 0; font-size: 16px; display: none; }
+  #translation.show { display: block; animation: fade .25s var(--ease-out); }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } }
+
+  /* Карточка слова снизу */
+  #sheet { position: fixed; left: 8px; right: 8px; bottom: 0; min-height: 34vh;
+    padding: 20px 20px calc(24px + env(safe-area-inset-bottom)); background: var(--card);
+    border-radius: 24px 24px 0 0; box-shadow: 0 -8px 40px rgb(0 0 0 / .35);
+    transform: translateY(105%); transition: transform .38s var(--ease-drawer); }
+  #sheet.open { transform: translateY(0); }
+  .sheet-head { display: flex; align-items: center; gap: 4px; }
+  #lemma { flex: 1; font-size: 30px; font-weight: 700; letter-spacing: -.02em; overflow-wrap: anywhere; }
+  #surface { color: var(--hint); font-size: 15px; margin-top: 2px; min-height: 1em; }
+  #ru { font-size: 20px; margin-top: 14px; }
+  #save.saved svg { fill: currentColor; color: var(--accent); }
+  .spinner { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid var(--hint);
+    border-right-color: transparent; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #error { color: #ff6b6b; text-align: center; margin-top: 30px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #sheet { transition: none; }
+    #translation.show { animation: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <p id="text"><span class="spinner"></span></p>
+    <div class="row">
+      <button class="icon" id="speak" aria-label="Прослушать">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>
+      </button>
+      <button class="icon" id="copy" aria-label="Скопировать">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>
+      </button>
+    </div>
+    <button class="btn" id="by-words">Перевести по словам</button>
+    <button class="btn ghost" id="whole">Перевод целиком</button>
+    <p id="translation"></p>
+  </div>
+  <p id="error" hidden></p>
+</main>
+
+<section id="sheet" aria-live="polite">
+  <div class="sheet-head">
+    <div id="lemma"></div>
+    <button class="icon" id="say" aria-label="Произнести">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+    </button>
+    <button class="icon" id="save" aria-label="В словарь">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4z"/></svg>
+    </button>
+  </div>
+  <div id="surface"></div>
+  <div id="ru"></div>
+</section>
+
+<script>
+const tg = window.Telegram?.WebApp;
+tg?.ready();
+tg?.expand();
+
+const $ = s => document.querySelector(s);
+const replyId = new URLSearchParams(location.search).get('r');
+let gloss = null;          // номер слова → {lemma, ru}
+let glossPromise = null;
+let saved = new Set();     // сохранённые слова (в нижнем регистре)
+let current = null;        // выбранное слово {i, el}
+let replyText = '';
+
+async function api(path, data = {}) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initData: tg?.initData || '', r: replyId, ...data }),
+  });
+  if (!res.ok) throw new Error(await res.text() || res.status);
+  return res.json();
+}
+
+function showError(msg) {
+  const e = $('#error');
+  e.textContent = msg;
+  e.hidden = false;
+}
+
+// Перевод всех слов — один запрос при открытии; нажатие на слово берёт результат из него
+function loadGloss() {
+  glossPromise ??= api('/api/gloss').then(d => {
+    gloss = d.items;
+    document.querySelectorAll('.w').forEach(el => {
+      el.querySelector('small').textContent = gloss[el.dataset.i]?.ru || '';
+    });
+    markSaved();
+  }).catch(err => { glossPromise = null; throw err; });
+  return glossPromise;
+}
+
+function markSaved() {
+  if (!gloss) return;
+  document.querySelectorAll('.w').forEach(el => {
+    const g = gloss[el.dataset.i];
+    el.classList.toggle('saved', !!g && saved.has(g.lemma.toLowerCase()));
+  });
+}
+
+function render(d) {
+  const p = $('#text');
+  p.textContent = '';
+  for (const tok of d.tokens) {
+    if (tok.w === undefined) { p.append(tok.t); continue; }
+    const span = document.createElement('span');
+    span.className = 'w';
+    span.dataset.i = tok.w;
+    span.append(tok.t, document.createElement('small'));
+    span.onclick = () => openWord(tok.w, span);
+    p.append(span);
+  }
+  replyText = d.text;
+  $('#translation').textContent = d.translation;
+  saved = new Set(d.saved);
+}
+
+async function openWord(i, el) {
+  tg?.HapticFeedback?.selectionChanged();
+  current?.el.classList.remove('on');
+  current = { i, el };
+  el.classList.add('on');
+  const surface = el.firstChild.textContent;
+  $('#lemma').textContent = surface;
+  $('#surface').textContent = '';
+  $('#ru').innerHTML = '<span class="spinner"></span>';
+  $('#save').classList.remove('saved');
+  $('#sheet').classList.add('open');
+  try { await loadGloss(); } catch { $('#ru').textContent = 'Не удалось перевести'; return; }
+  if (current?.i !== i) return;     // пока грузилось, выбрали другое слово
+  const g = gloss[i] || { lemma: surface, ru: '—' };
+  $('#lemma').textContent = g.lemma;
+  $('#surface').textContent = g.lemma.toLowerCase() !== surface.toLowerCase() ? `в тексте: ${surface}` : '';
+  $('#ru').textContent = g.ru;
+  $('#save').classList.toggle('saved', saved.has(g.lemma.toLowerCase()));
+}
+
+function closeSheet() {
+  $('#sheet').classList.remove('open');
+  current?.el.classList.remove('on');
+  current = null;
+}
+
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'en-US';
+  speechSynthesis.speak(u);
+}
+
+$('#save').onclick = async () => {
+  if (!current || !gloss) return;
+  const g = gloss[current.i];
+  if (!g) return;
+  const key = g.lemma.toLowerCase();
+  const want = !saved.has(key);
+  $('#save').classList.toggle('saved', want);       // сразу показываем результат, сервер догонит
+  tg?.HapticFeedback?.impactOccurred('light');
+  try {
+    const r = await api('/api/save', { en: g.lemma, ru: g.ru, save: want });
+    r.saved ? saved.add(key) : saved.delete(key);
+  } catch {
+    tg?.showAlert?.('Не получилось сохранить слово');
+  }
+  $('#save').classList.toggle('saved', saved.has(key));
+  markSaved();
+};
+
+$('#say').onclick = () => speak($('#lemma').textContent);
+$('#speak').onclick = () => speak(replyText);
+$('#copy').onclick = async () => {
+  try { await navigator.clipboard.writeText(replyText); tg?.HapticFeedback?.notificationOccurred('success'); }
+  catch { tg?.showAlert?.(replyText); }
+};
+
+$('#by-words').onclick = async () => {
+  const on = !$('#text').classList.contains('gloss');
+  const b = $('#by-words');
+  if (on && !gloss) {
+    b.disabled = true;
+    b.textContent = 'Перевожу…';
+    try { await loadGloss(); } catch { b.disabled = false; b.textContent = 'Перевести по словам'; return; }
+    b.disabled = false;
+  }
+  $('#text').classList.toggle('gloss', on);
+  b.textContent = on ? 'Скрыть перевод слов' : 'Перевести по словам';
+};
+
+$('#whole').onclick = () => {
+  const t = $('#translation');
+  t.classList.toggle('show');
+  $('#whole').textContent = t.classList.contains('show') ? 'Скрыть перевод' : 'Перевод целиком';
+};
+
+// Нажатие мимо слова и карточки закрывает карточку
+document.addEventListener('click', e => {
+  if (!e.target.closest('.w, #sheet')) closeSheet();
+});
+
+api('/api/reply')
+  .then(d => { render(d); loadGloss().catch(() => {}); })
+  .catch(err => { $('#text').textContent = ''; showError('Не удалось загрузить текст: ' + err.message); });
+</script>
+</body>
+</html>

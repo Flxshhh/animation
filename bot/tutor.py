@@ -20,6 +20,8 @@ For every learner message:
    If the learner writes in Russian, answer in simple English and gently encourage them to try
    in English.
 4. Translate your reply into natural Russian.
+5. Rate the learner's message from 1 to 10 (grammar, vocabulary, naturalness for their level) and
+   comment on it in Russian in one or two sentences: what was good and what to work on.
 """
 
 WORDS_PROMPT = """\
@@ -30,6 +32,23 @@ fits this context. Return at most {limit} items, the most useful first.
 
 Text:
 {text}"""
+
+HELP_PROMPT = """\
+Here is the conversation so far. The learner needs help answering your last message.
+Suggest three different short answers they could say (simple, natural spoken English, 1–2 sentences
+each, from easy to more advanced), each with a Russian translation, and one useful phrase or
+structure to try, with a short Russian explanation."""
+
+GLOSS_PROMPT = """\
+Below is an English text and a numbered list of its words. For every numbered word give its
+dictionary form (lemma; for a phrasal verb or set phrase use the whole phrase, e.g. "pick up",
+"at least") and its Russian translation that fits this context (1–3 words).
+
+Text:
+{text}
+
+Words:
+{words}"""
 
 TRANSLATE_PROMPT = """\
 Translate this English word or phrase into Russian for a learner's vocabulary list.
@@ -49,6 +68,8 @@ class Turn(BaseModel):
     mistakes: list[Mistake]
     reply: str = Field(description="Your spoken reply in English")
     reply_ru: str = Field(description="Russian translation of the reply")
+    score: int = Field(description="Rating of the learner's message from 1 to 10")
+    score_comment: str = Field(description="Comment on the rating, in Russian")
 
 
 class WordItem(BaseModel):
@@ -58,6 +79,26 @@ class WordItem(BaseModel):
 
 class WordList(BaseModel):
     items: list[WordItem]
+
+
+class HelpAnswer(BaseModel):
+    en: str
+    ru: str
+
+
+class Help(BaseModel):
+    answers: list[HelpAnswer]
+    tip: str = Field(description="A useful phrase or structure with a short Russian explanation")
+
+
+class Gloss(BaseModel):
+    i: int = Field(description="Number of the word in the list")
+    lemma: str
+    ru: str
+
+
+class GlossList(BaseModel):
+    items: list[Gloss]
 
 
 class TutorError(Exception):
@@ -97,6 +138,17 @@ class Tutor:
         prompt = WORDS_PROMPT.format(text=text, limit=limit)
         result = await self._parse([{"role": "user", "content": prompt}], WordList)
         return result.items[:limit]
+
+    async def help(self, history: list[dict]) -> Help:
+        messages = history + [{"role": "user", "content": HELP_PROMPT}]
+        return await self._parse(messages, Help, system=SYSTEM_PROMPT)
+
+    async def gloss(self, text: str, words: list[str]) -> dict[int, Gloss]:
+        """Перевод каждого слова текста в контексте: номер слова → лемма и перевод."""
+        numbered = "\n".join(f"{n}. {w}" for n, w in enumerate(words))
+        prompt = GLOSS_PROMPT.format(text=text, words=numbered)
+        result = await self._parse([{"role": "user", "content": prompt}], GlossList)
+        return {g.i: g for g in result.items if 0 <= g.i < len(words)}
 
     async def translate(self, item: str) -> WordItem:
         prompt = TRANSLATE_PROMPT.format(item=item)

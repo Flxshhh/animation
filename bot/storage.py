@@ -24,6 +24,15 @@ CREATE TABLE IF NOT EXISTS suggestions ( -- слова, которые бот п
     en      TEXT    NOT NULL,
     ru      TEXT    NOT NULL
 );
+CREATE TABLE IF NOT EXISTS feedback (    -- разбор реплики ученика: нужен кнопкам «Объяснить» и «Оценка»
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    data    TEXT    NOT NULL           -- JSON
+);
+CREATE TABLE IF NOT EXISTS cache (       -- ответы Claude, которые незачем запрашивать дважды
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS words (
     user_id INTEGER NOT NULL,
     en      TEXT    NOT NULL,
@@ -96,6 +105,31 @@ class Storage:
             (sugg_id, user_id),
         ).fetchone()
 
+    def save_feedback(self, user_id: int, data: dict) -> int:
+        with self.db:
+            cur = self.db.execute(
+                "INSERT INTO feedback (user_id, data) VALUES (?, ?)",
+                (user_id, json.dumps(data, ensure_ascii=False)),
+            )
+        return cur.lastrowid
+
+    def get_feedback(self, fb_id: int, user_id: int) -> dict | None:
+        row = self.db.execute(
+            "SELECT data FROM feedback WHERE id = ? AND user_id = ?", (fb_id, user_id)
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def cache_get(self, key: str):
+        row = self.db.execute("SELECT value FROM cache WHERE key = ?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def cache_set(self, key: str, value) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO cache (key, value) VALUES (?, ?)",
+                (key, json.dumps(value, ensure_ascii=False)),
+            )
+
     # ----------------------------- Словарь -----------------------------
 
     def add_word(self, user_id: int, en: str, ru: str) -> bool:
@@ -119,6 +153,10 @@ class Storage:
                 "DELETE FROM words WHERE user_id = ? AND lower(en) = lower(?)", (user_id, en.strip())
             )
         return cur.rowcount > 0
+
+    def saved_set(self, user_id: int) -> set[str]:
+        rows = self.db.execute("SELECT lower(en) FROM words WHERE user_id = ?", (user_id,))
+        return {r[0] for r in rows}
 
     def list_words(self, user_id: int) -> list[tuple[str, str]]:
         return self.db.execute(

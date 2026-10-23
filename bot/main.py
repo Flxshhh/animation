@@ -1,13 +1,16 @@
 """Telegram-бот для разговорной практики английского.
 
 Голосовое → распознавание → Claude исправляет ошибки и отвечает → ответ голосом.
-Под каждым голосовым ответом кнопки: показать текст, перевод, добавить слова в словарь.
+Сначала бот присылает только голос — чтобы учиться понимать на слух. Текст открывается
+кнопкой «Текст» в мини-приложении, где любое слово можно перевести и сохранить в словарь.
 """
 
 import asyncio
+import difflib
 import html
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -17,13 +20,14 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (BufferedInputFile, CallbackQuery, FSInputFile, InlineKeyboardButton,
-                           InlineKeyboardMarkup, Message)
+                           InlineKeyboardMarkup, Message, WebAppInfo)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 
 from speech import SpeechToText, TextToSpeech
 from storage import Storage
-from tutor import Tutor, TutorError, Turn
+from tutor import Tutor, TutorError
+from webapp import make_app, start_server
 
 load_dotenv(Path(__file__).with_name(".env"))
 
@@ -34,6 +38,9 @@ db = Storage(os.getenv("DB_PATH", str(Path(__file__).with_name("bot.db"))))
 tutor = Tutor(os.getenv("CLAUDE_MODEL", "claude-opus-5-5"), os.getenv("CLAUDE_EFFORT", "low"))
 stt = SpeechToText(os.getenv("WHISPER_MODEL", "small"), os.getenv("WHISPER_LANGUAGE", "en"))
 tts = TextToSpeech(os.getenv("TTS_VOICE", "en-US-AriaNeural"), os.getenv("TTS_RATE", "-5%"))
+# Публичный https-адрес мини-приложения (например, от cloudflared). Пусто — текст в подписи к голосовому
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")
+WEBAPP_PORT = int(os.getenv("WEBAPP_PORT", "8080"))
 
 router = Router()
 log = logging.getLogger("chatty")
@@ -41,13 +48,14 @@ log = logging.getLogger("chatty")
 HELP = """\
 <b>Привет! Я твой собеседник для практики английского.</b>
 
-🎙 Отправь <b>голосовое</b> на английском — я распознаю его, покажу ошибки и отвечу голосом.
-⌨️ Можно и <b>текстом</b>.
+🎙 Отправь <b>голосовое</b> на английском (можно и текстом).
+Я покажу исправленную фразу: <s>лишнее</s> зачёркнуто, <b>нужное</b> выделено.
+• <b>Объяснить</b> — почему так
+• <b>Оценка</b> — оценка твоей фразы
 
-Под моими голосовыми есть кнопки:
-📝 <b>Текст</b> — показать, что я сказал
-🇷🇺 <b>Перевод</b> — перевод моей реплики
-➕ <b>В словарь</b> — выбрать слова из реплики и сохранить
+Отвечаю только голосом — тренируй понимание на слух. Не понял?
+• <b>Текст</b> — открыть текст; нажми на слово, чтобы увидеть перевод и 🔖 сохранить его
+• <b>Помощь</b> — варианты, что ответить
 
 <b>Команды</b>
 /dict — мой словарь
@@ -140,31 +148,79 @@ async def cmd_export(message: Message):
 
 # ------------------------------ Диалог ------------------------------
 
-def feedback_text(turn: Turn, heard: str | None) -> str:
-    """Сообщение с разбором: что распознано и какие ошибки."""
+TOKEN_RE = re.compile(r"\w+(?:['’]\w+)*|[^\w\s]")
+NO_SPACE_BEFORE = set(".,!?;:)%'’…")
+
+
+TAGS_RE = re.compile(r"</?[bs]>")
+
+
+def join_tokens(tokens: list[str]) -> str:
+    """Склеивает слова и знаки препинания: пробел ставится между словами, но не перед «.,!?»."""
+    out = ""
+    for t in tokens:
+        first = TAGS_RE.sub("", t)[:1]          # теги <b>/<s> не влияют на пробелы
+        if out and first not in NO_SPACE_BEFORE and not TAGS_RE.sub("", out).endswith("("):
+            out += " "
+        out += t
+    return out
+
+
+def diff_html(original: str, corrected: str) -> str:
+    """Исправленная фраза: удалённое зачёркнуто, добавленное жирным (как в оригинальном боте)."""
+    a, b = TOKEN_RE.findall(original), TOKEN_RE.findall(corrected)
+    # регистр не сравниваем: распознавание речи расставляет заглавные буквы как попало
+    sm = difflib.SequenceMatcher(None, [t.lower() for t in a], [t.lower() for t in b], autojunk=False)
     parts = []
-    if heard:
-        parts.append(f"🗣 <i>{html.escape(heard)}</i>")
-    if turn.mistakes:
-        parts.append("✏️ <b>Исправления</b>")
-        parts += [
-            f"• <s>{html.escape(m.wrong)}</s> → <b>{html.escape(m.right)}</b> — {html.escape(m.why)}"
-            for m in turn.mistakes
-        ]
-        parts.append(f"\n✨ <b>Лучше так:</b> {html.escape(turn.corrected)}")
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            parts += [html.escape(t) for t in b[j1:j2]]
+        if op in ("delete", "replace"):
+            parts.append("<s>" + html.escape(join_tokens(a[i1:i2])) + "</s>")
+        if op in ("insert", "replace"):
+            parts.append("<b>" + html.escape(join_tokens(b[j1:j2])) + "</b>")
+    return join_tokens(parts)
+
+
+def feedback_text(fb: dict, shown: str) -> str:
+    """shown — какие разделы раскрыты: 'x' — объяснения, 's' — оценка."""
+    if fb["mistakes"]:
+        text = "💡 " + fb["diff"]
     else:
-        parts.append("✅ Без ошибок!")
-    return "\n".join(parts)
+        text = "💡 " + html.escape(fb["original"]) + "\n✅ Без ошибок!"
+    if "x" in shown and fb["mistakes"]:
+        text += "\n\n" + "\n".join(
+            f"• <s>{html.escape(m['wrong'])}</s> → <b>{html.escape(m['right'])}</b> — {html.escape(m['why'])}"
+            for m in fb["mistakes"]
+        )
+    if "s" in shown:
+        text += f"\n\n⭐ <b>Оценка: {fb['score']}/10</b>\n{html.escape(fb['score_comment'])}"
+    return text
+
+
+def feedback_keyboard(fb_id: int, has_mistakes: bool, shown: str) -> InlineKeyboardMarkup | None:
+    kb = InlineKeyboardBuilder()
+    if has_mistakes and "x" not in shown:
+        kb.button(text="Объяснить", callback_data=f"fb:{fb_id}:{shown}x")
+    if "s" not in shown:
+        kb.button(text="Оценка", callback_data=f"fb:{fb_id}:{shown}s")
+    markup = kb.as_markup()
+    return markup if markup.inline_keyboard else None
 
 
 def reply_keyboard(reply_id: int, shown: str = "") -> InlineKeyboardMarkup:
-    """shown: '' — ничего не раскрыто, 't' — показан текст, 'r' — текст и перевод."""
+    """Кнопки под голосовым ответом. shown: '' — ничего не раскрыто, 't' — текст, 'r' — текст и перевод."""
     kb = InlineKeyboardBuilder()
-    if not shown:
-        kb.button(text="📝 Текст", callback_data=f"show:{reply_id}:t")
-    if shown != "r":
-        kb.button(text="🇷🇺 Перевод", callback_data=f"show:{reply_id}:r")
-    kb.button(text="➕ В словарь", callback_data=f"words:{reply_id}")
+    if WEBAPP_URL:
+        kb.button(text="Текст", web_app=WebAppInfo(url=f"{WEBAPP_URL}/?r={reply_id}"))
+    elif not shown:
+        kb.button(text="Текст", callback_data=f"show:{reply_id}:t")
+    else:
+        # без мини-приложения: текст в подписи, а слова выбираются кнопками
+        if shown != "r":
+            kb.button(text="🇷🇺 Перевод", callback_data=f"show:{reply_id}:r")
+        kb.button(text="➕ В словарь", callback_data=f"words:{reply_id}")
+    kb.button(text="Помощь", callback_data=f"help:{reply_id}")
     return kb.as_markup()
 
 
@@ -178,7 +234,7 @@ async def keep_action(message: Message, action: ChatAction, done: asyncio.Event)
             pass
 
 
-async def talk(message: Message, user_text: str, heard: str | None):
+async def talk(message: Message, user_text: str):
     user_id = message.from_user.id
     done = asyncio.Event()
     status = asyncio.create_task(keep_action(message, ChatAction.RECORD_VOICE, done))
@@ -194,7 +250,16 @@ async def talk(message: Message, user_text: str, heard: str | None):
         db.add_message(user_id, "assistant", turn.reply)
         reply_id = db.save_reply(user_id, turn.reply, turn.reply_ru)
 
-        await message.answer(feedback_text(turn, heard))
+        fb = {
+            "original": user_text,
+            "diff": diff_html(user_text, turn.corrected),
+            "mistakes": [m.model_dump() for m in turn.mistakes],
+            "score": turn.score,
+            "score_comment": turn.score_comment,
+        }
+        fb_id = db.save_feedback(user_id, fb)
+        await message.answer(feedback_text(fb, ""), reply_markup=feedback_keyboard(fb_id, bool(fb["mistakes"]), ""))
+
         with tempfile.TemporaryDirectory() as tmp:
             ogg = Path(tmp) / "reply.ogg"
             try:
@@ -204,6 +269,7 @@ async def talk(message: Message, user_text: str, heard: str | None):
                 log.exception("tts failed")
                 await message.answer(html.escape(turn.reply), reply_markup=reply_keyboard(reply_id, "t"))
                 return
+            # голос без подписи: сначала слушаем, текст — по кнопке
             await message.answer_voice(FSInputFile(ogg), reply_markup=reply_keyboard(reply_id))
     finally:
         done.set()
@@ -226,15 +292,56 @@ async def on_voice(message: Message):
     if not text:
         await message.answer("Не расслышал 🙉 Попробуй ещё раз, погромче и ближе к микрофону.")
         return
-    await talk(message, text, heard=text)
+    await talk(message, text)
 
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def on_text(message: Message):
-    await talk(message, message.text, heard=None)
+    await talk(message, message.text)
 
 
 # ------------------------------ Кнопки ------------------------------
+
+@router.callback_query(F.data.startswith("fb:"))
+async def on_feedback(call: CallbackQuery):
+    _, fb_id, shown = call.data.split(":")
+    fb = db.get_feedback(int(fb_id), call.from_user.id)
+    if not fb:
+        await call.answer("Разбор не найден", show_alert=True)
+        return
+    await call.message.edit_text(
+        feedback_text(fb, shown),
+        reply_markup=feedback_keyboard(int(fb_id), bool(fb["mistakes"]), shown),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("help:"))
+async def on_help(call: CallbackQuery):
+    reply_id = int(call.data.split(":")[1])
+    if not db.get_reply(reply_id, call.from_user.id):
+        await call.answer("Реплика не найдена", show_alert=True)
+        return
+    key = f"help:{reply_id}"
+    text = db.cache_get(key)
+    if text is None:
+        await call.answer("Думаю, что можно ответить…")
+        try:
+            help_ = await tutor.help(db.get_history(call.from_user.id, HISTORY_LIMIT))
+        except (anthropic.APIError, TutorError):
+            log.exception("help failed")
+            await call.message.answer("😕 Не получилось подсказать. Попробуй ещё раз.")
+            return
+        lines = ["🆘 <b>Можно ответить так:</b>"]
+        lines += [f"\n{n}. <b>{html.escape(a.en)}</b>\n<i>{html.escape(a.ru)}</i>"
+                  for n, a in enumerate(help_.answers, 1)]
+        lines.append(f"\n🧩 {html.escape(help_.tip)}")
+        text = "\n".join(lines)
+        db.cache_set(key, text)
+    else:
+        await call.answer()
+    await call.message.answer(text)
+
 
 @router.callback_query(F.data.startswith("show:"))
 async def on_show(call: CallbackQuery):
@@ -320,7 +427,16 @@ async def main():
     bot = Bot(os.environ["TELEGRAM_BOT_TOKEN"], default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     dp.include_router(router)
-    await dp.start_polling(bot)
+    runner = None
+    if WEBAPP_URL:
+        runner = await start_server(make_app(db, tutor, bot.token, ALLOWED), WEBAPP_PORT)
+    else:
+        log.warning("WEBAPP_URL не задан: кнопка «Текст» покажет текст в подписи к голосовому")
+    try:
+        await dp.start_polling(bot)
+    finally:
+        if runner:
+            await runner.cleanup()
 
 
 if __name__ == "__main__":
