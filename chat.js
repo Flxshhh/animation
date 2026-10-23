@@ -16,7 +16,8 @@ const CHAT_KEY = 'wordbook.chat';    // { msgs: [...] }
 const GEMINI = 'https://generativelanguage.googleapis.com/v1beta';
 const HISTORY_TURNS = 20;            // сколько последних реплик видит собеседник
 const MAX_RECORD_SEC = 60;
-const TIMEOUT_MS = 40000;            // дольше Google не ждём — пробуем ещё раз или другую модель
+const TIMEOUT_MS = 25000;            // дольше Google не ждём — пробуем другую модель
+const COOLDOWN_MS = 10 * 60 * 1000;  // модель, которая не ответила, 10 минут пробуем последней
 
 const CHAT_ICON = {
   mic: svg('<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>'),
@@ -39,9 +40,14 @@ function saveJSON(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { console.warn('save', e); }
 }
 
-const ai = loadJSON(AI_KEY, { key: '', model: '', rate: 0.95 });
+const ai = loadJSON(AI_KEY, { key: '', model: '', rate: 0.95, v: 0 });
+// раньше модель запоминалась сама после первого ответа; теперь пустая модель = «выбирать автоматически»
+if (ai.v < 2) { ai.model = ''; ai.v = 2; }
+// скорость и сбои моделей: { [модель]: { ms, failAt } } — чтобы сначала идти к быстрым и живым
+const health = loadJSON('wordbook.ai-health', {});
 const chat = loadJSON(CHAT_KEY, { msgs: [] });
 const saveAi = () => saveJSON(AI_KEY, ai);
+saveAi();
 // ссылки на записи голоса живут только до перезагрузки — в хранилище их не кладём
 const saveChat = () => saveJSON(CHAT_KEY, {
   msgs: chat.msgs.filter(m => !m.failed && (m.kind !== 'user' || m.fb)).slice(-100).map(({ audioUrl, ...m }) => m),
@@ -143,49 +149,64 @@ async function geminiFetch(path, body) {
   return data;
 }
 
-/* Модели, которые умеют generateContent: сначала Flash (быстрые, бесплатные), новые выше.
- * Список берём у самого API — названия моделей у Google меняются часто. */
+/* Flash-модели, которые умеют generateContent. Список берём у самого API: названия у Google
+ * меняются часто. Lite — быстрее и реже перегружены, поэтому они первыми */
 async function listModels() {
   const d = await geminiFetch('/models?pageSize=1000');
   const ver = n => parseFloat((n.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
-  const rank = n => (/flash/.test(n) && !/lite/.test(n) ? 0 : /flash-lite/.test(n) ? 1 : /pro/.test(n) ? 2 : 3)
-    + (/preview|exp/.test(n) ? 0.5 : 0);
+  const rank = n => (/lite/.test(n) ? 0 : 1) + (/preview|exp/.test(n) ? 0.5 : 0);
   return (d.models || [])
     .filter(m => (m.supportedGenerationMethods || []).includes('generateContent'))
     .map(m => m.name.replace(/^models\//, ''))
-    .filter(n => /^gemini-/.test(n) && !/tts|image|live|embed|audio|computer|robotics|learnlm/.test(n))
+    .filter(n => /^gemini-.*flash/.test(n) && !/tts|image|live|embed|audio|omni|transcribe|computer|robotics/.test(n))
     .sort((a, b) => rank(a) - rank(b) || ver(b) - ver(a) || a.localeCompare(b));
 }
 
 let modelsCache = null;
 async function modelChain() {
   modelsCache ??= await listModels();
-  // выбранная модель первой, остальные — запасные на случай исчерпанного лимита
-  const rest = modelsCache.filter(m => m !== ai.model && !/pro/.test(m));
-  return ai.model ? [ai.model, ...rest] : rest;
+  const now = Date.now();
+  // ожидаемое время ответа: измеренное, иначе условное по порядку списка; недавно упавшие — в конец
+  const cost = (m, i) => (now - (health[m]?.failAt || 0) < COOLDOWN_MS ? 1e9 : 0)
+    + (health[m]?.ms ?? 12000 + i * 500);
+  const auto = modelsCache.map((m, i) => [m, cost(m, i)]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
+  // модель, выбранная вручную в настройках, — первой
+  return ai.model ? [ai.model, ...auto.filter(m => m !== ai.model)] : auto;
+}
+
+function noteHealth(model, ms) {
+  const h = health[model] ||= {};
+  if (ms == null) h.failAt = Date.now();
+  else { h.ms = h.ms ? Math.round(h.ms * 0.6 + ms * 0.4) : ms; h.failAt = 0; }
+  saveJSON('wordbook.ai-health', health);
 }
 
 /* Временные сбои: лимит, перегрузка у Google, пропавшая модель, таймаут, обрыв связи.
  * На них пробуем ещё раз — уже на следующей модели из списка */
 const RETRYABLE = new Set([429, 404, 500, 502, 503, 504, 'timeout', 'network']);
 
-async function generate(contents, schema) {
+async function generate(contents, schema, onRetry = () => {}) {
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
     contents,
     generationConfig: { responseMimeType: 'application/json', responseSchema: schema },
   };
   let lastErr;
-  for (const model of (await modelChain()).slice(0, 3)) {
+  const chain = (await modelChain()).slice(0, 3);
+  for (const [n, model] of chain.entries()) {
+    if (n) onRetry(lastErr);
+    const t0 = Date.now();
     try {
       const d = await geminiFetch(`/models/${model}:generateContent`, body);
       const cand = d.candidates?.[0];
       const text = (cand?.content?.parts || []).filter(p => p.text && !p.thought).map(p => p.text).join('');
       if (!text) throw new AiError(d.promptFeedback?.blockReason || cand?.finishReason || 'пустой ответ');
-      if (!ai.model) { ai.model = model; saveAi(); }
-      return JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ''));
+      const out = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ''));
+      noteHealth(model, Date.now() - t0);
+      return out;
     } catch (e) {
       lastErr = e;
+      if (RETRYABLE.has(e.status)) noteHealth(model, null);
       // ключ неверный или запрос плохой — другая модель не поможет
       if (!RETRYABLE.has(e.status)) throw e;
       // связь моргнула — небольшая пауза перед следующей попыткой
@@ -390,11 +411,12 @@ async function sendTurn(payload) {
   renderChat();
 
   try {
+    // только запись, без текста: иначе модель иногда дописывает этот текст в расшифровку
     const parts = audio
-      ? [{ inlineData: { mimeType: 'audio/wav', data: await blobToBase64(audio) } },
-         { text: 'This is my voice message.' }]
+      ? [{ inlineData: { mimeType: 'audio/wav', data: await blobToBase64(audio) } }]
       : [{ text }];
-    const t = await generate([...historyContents(), { role: 'user', parts }], TURN_SCHEMA);
+    const t = await generate([...historyContents(), { role: 'user', parts }], TURN_SCHEMA,
+      () => setThinkingNote('Google перегружен — пробую другую модель…'));
     const original = audio ? (t.transcript || '').trim() : text;
     user.fb = {
       original,
@@ -443,7 +465,8 @@ async function askHelp(msg) {
 /* ----------------------------- Отрисовка ---------------------------- */
 
 const WORD_RE = /[A-Za-z]+(?:['’][A-Za-z]+)*/g;
-const norm = w => w.toLowerCase().replace(/’/g, "'");
+// нейросеть иногда пишет слово вместе с точкой или запятой («day.») — сравниваем только буквы
+const norm = w => w.toLowerCase().replace(/’/g, "'").replace(/[^a-z']/g, '');
 
 /* Перевод слов от нейросети → по номеру слова в тексте. Нейросеть может пропустить или
  * склеить слово, поэтому сверяем сами слова и ищем совпадение чуть впереди */
@@ -595,7 +618,7 @@ function setComposer(mode) {
       <div class="rec"><i class="rec-dot"></i><span id="rec-time">0:00</span><span class="muted small">Говори… нажми, чтобы отправить</span></div>
       <button class="mic on" data-act="stop" aria-label="Отправить">${CHAT_ICON.send}</button>`;
   } else if (mode === 'thinking') {
-    c.innerHTML = `<div class="rec muted"><span class="dots3"><i></i><i></i><i></i></span>Собеседник думает…</div>`;
+    c.innerHTML = `<div class="rec muted"><span class="dots3"><i></i><i></i><i></i></span><span id="think-note">Собеседник думает…</span></div>`;
   } else if (typing) {
     c.innerHTML = `<button class="icon-btn" data-act="voice" aria-label="Голосом">${CHAT_ICON.mic}</button>
       <form id="type-form" class="type-form" autocomplete="off">
@@ -609,6 +632,11 @@ function setComposer(mode) {
       <button class="mic" data-act="record" aria-label="Записать голосовое">${CHAT_ICON.mic}</button>
       <button class="icon-btn" data-act="settings" aria-label="Настройки собеседника">${CHAT_ICON.gear}</button>`;
   }
+}
+
+function setThinkingNote(text) {
+  const el = $('#think-note');
+  if (el) el.textContent = text;
 }
 
 /* ----------------------------- Карточка слова ----------------------- */
@@ -654,14 +682,14 @@ async function openAiSettings() {
       <label for="ai-key2">Ключ Gemini API</label>
       <input id="ai-key2" type="text" value="${esc(ai.key)}" autocapitalize="none" spellcheck="false">
       <label for="ai-model">Модель</label>
-      <select id="ai-model"><option value="${esc(ai.model)}">${esc(ai.model || 'загружаю…')}</option></select>
+      <select id="ai-model"><option value="">Автоматически (рекомендую)</option></select>
       <label for="ai-rate">Скорость речи: <span id="rate-val">${ai.rate}</span></label>
       <input id="ai-rate" type="range" min="0.6" max="1.2" step="0.05" value="${ai.rate}">
       <button class="btn primary" type="submit">Сохранить</button>
       <button class="btn danger" type="button" id="chat-clear">Начать разговор заново</button>
     </form>
-    <p class="muted small">Flash — быстрее и с большим бесплатным лимитом, Pro — умнее, но лимит маленький или платный.
-      Если лимит модели закончится, я сам попробую следующую.</p>`);
+    <p class="muted small">«Автоматически» — сначала самая быстрая модель, которая сейчас отвечает; если Google
+      перегружен или кончился лимит, я сам попробую другую. Lite — быстрее, обычный Flash — точнее, но чаще перегружен.</p>`);
   $('#ai-rate').oninput = e => { $('#rate-val').textContent = e.target.value; };
   $('#chat-clear').onclick = () => {
     if (!confirm('Удалить весь разговор?')) return;
@@ -684,10 +712,11 @@ async function openAiSettings() {
   };
   try {
     modelsCache ??= await listModels();
-    $('#ai-model').innerHTML = modelsCache.map(m =>
-      `<option value="${esc(m)}" ${m === ai.model ? 'selected' : ''}>${esc(m)}</option>`).join('');
+    const ms = m => health[m]?.ms ? ` · ~${Math.round(health[m].ms / 1000)} с` : '';
+    $('#ai-model').innerHTML = '<option value="">Автоматически (рекомендую)</option>' + modelsCache.map(m =>
+      `<option value="${esc(m)}" ${m === ai.model ? 'selected' : ''}>${esc(m)}${ms(m)}</option>`).join('');
   } catch (e) {
-    $('#ai-model').innerHTML = `<option value="${esc(ai.model)}">${esc(ai.model || '—')} (список не загрузился)</option>`;
+    if (ai.model) $('#ai-model').insertAdjacentHTML('beforeend', `<option value="${esc(ai.model)}" selected>${esc(ai.model)}</option>`);
   }
 }
 
