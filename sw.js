@@ -1,7 +1,7 @@
 // Service worker: сохраняет приложение и словарь на телефоне,
 // чтобы сайт открывался и добавлял слова без интернета.
 // При изменении файлов приложения увеличь версию — старый кэш удалится.
-const CACHE = 'wordbook-v10';
+const CACHE = 'wordbook-v11';
 const SHELL = [
   './', 'index.html', 'style.css', 'app.js', 'chat.js', 'manifest.webmanifest', 'icon.svg',
   'fonts/manrope-cyrillic-wght-normal.woff2', 'fonts/manrope-latin-wght-normal.woff2',
@@ -14,7 +14,7 @@ self.addEventListener('install', e => {
 
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys()
-    .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(keys => Promise.all(keys.filter(k => k.startsWith('wordbook-') && k !== CACHE).map(k => caches.delete(k))))
     .then(() => self.clients.claim()));
 });
 
@@ -22,6 +22,8 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   // запросы к API перевода/словаря идут в сеть напрямую
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  // mail/ — отдельное приложение со своим service worker
+  if (url.pathname.includes('/mail/')) return;
 
   // stale-while-revalidate: сразу отдаём из кэша (работает офлайн и быстро),
   // а в фоне скачиваем свежую версию — она будет при следующем открытии
