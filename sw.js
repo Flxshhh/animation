@@ -22,8 +22,6 @@ self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   // запросы к API перевода/словаря идут в сеть напрямую
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  // mail/ — отдельное приложение со своим service worker
-  if (url.pathname.includes('/mail/')) return;
 
   // stale-while-revalidate: сразу отдаём из кэша (работает офлайн и быстро),
   // а в фоне скачиваем свежую версию — она будет при следующем открытии
